@@ -2,30 +2,27 @@ name: AI News Daily
 
 on:
   schedule:
-    # 每天北京时间 08:00 执行
+    # 每天北京时间 08:00
     - cron: "0 0 * * *"
 
-  # 保留手动运行
   workflow_dispatch:
 
 jobs:
-  test-ai:
+  fetch-news:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Test SiliconFlow AI
-        env:
-          SILICONFLOW_API_KEY: ${{ secrets.SILICONFLOW_API_KEY }}
+      - name: Fetch AI News
         run: |
-          curl https://api.siliconflow.cn/v1/chat/completions \
-            -H "Content-Type: application/json" \
-            -H "Authorization: Bearer $SILICONFLOW_API_KEY" \
-            -d '{
-              "model": "Qwen/Qwen3-8B",
-              "messages": [
-                {
-                  "role": "user",
-                  "content": "请只回复：AI自动化测试成功"
-                }
-              ]
-            }'
+          echo "开始抓取 AI 新闻..."
+
+          curl -L --max-time 20 \
+            "https://feeds.arstechnica.com/arstechnica/technology-lab" \
+            -o news.xml
+
+          echo "新闻抓取完成！"
+          echo "文件大小："
+          wc -c news.xml
+
+          echo "前 100 行："
+          head -100 news.xml
