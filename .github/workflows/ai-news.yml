@@ -1,6 +1,12 @@
 name: AI News Daily
 
 on:
+  schedule:
+    # 每天北京时间 08:00 执行
+    # GitHub Actions 使用 UTC 时间
+    - cron: "0 0 * * *"
+
+  # 保留手动运行功能
   workflow_dispatch:
 
 jobs:
