@@ -5,6 +5,7 @@ on:
     # 每天北京时间 08:00
     - cron: "0 0 * * *"
 
+  # 手动运行
   workflow_dispatch:
 
 jobs:
@@ -12,17 +13,9 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Fetch AI News
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Run news fetcher
         run: |
-          echo "开始抓取 AI 新闻..."
-
-          curl -L --max-time 20 \
-            "https://feeds.arstechnica.com/arstechnica/technology-lab" \
-            -o news.xml
-
-          echo "新闻抓取完成！"
-          echo "文件大小："
-          wc -c news.xml
-
-          echo "前 100 行："
-          head -100 news.xml
+          python3 news_fetcher.py
