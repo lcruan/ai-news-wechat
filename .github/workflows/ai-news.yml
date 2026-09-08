@@ -1,0 +1,12 @@
+name: AI News Daily
+
+on:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Test
+        run: echo "AI News 自动化任务启动成功！"
