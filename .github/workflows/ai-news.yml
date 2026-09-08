@@ -5,17 +5,18 @@ on:
     # 每天北京时间 08:00
     - cron: "0 0 * * *"
 
-  # 手动运行
   workflow_dispatch:
 
 jobs:
-  fetch-news:
+  ai-news:
     runs-on: ubuntu-latest
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Run news fetcher
+      - name: Run AI news filter
+        env:
+          SILICONFLOW_API_KEY: ${{ secrets.SILICONFLOW_API_KEY }}
         run: |
           python3 news_fetcher.py
