@@ -3,16 +3,29 @@ name: AI News Daily
 on:
   schedule:
     # 每天北京时间 08:00 执行
-    # GitHub Actions 使用 UTC 时间
     - cron: "0 0 * * *"
 
-  # 保留手动运行功能
+  # 保留手动运行
   workflow_dispatch:
 
 jobs:
-  test:
+  test-ai:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Test
-        run: echo "AI News 自动化任务启动成功！"
+      - name: Test SiliconFlow AI
+        env:
+          SILICONFLOW_API_KEY: ${{ secrets.SILICONFLOW_API_KEY }}
+        run: |
+          curl https://api.siliconflow.cn/v1/chat/completions \
+            -H "Content-Type: application/json" \
+            -H "Authorization: Bearer $SILICONFLOW_API_KEY" \
+            -d '{
+              "model": "Qwen/Qwen3-8B",
+              "messages": [
+                {
+                  "role": "user",
+                  "content": "请只回复：AI自动化测试成功"
+                }
+              ]
+            }'
