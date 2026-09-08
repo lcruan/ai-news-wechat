@@ -124,7 +124,7 @@ def ask_ai(news):
         method="POST"
     )
 
-    with urllib.request.urlopen(request, timeout=60) as response:
+    with urllib.request.urlopen(request, timeout=120) as response:
         result = json.loads(response.read().decode("utf-8"))
 
     answer = result["choices"][0]["message"]["content"]
