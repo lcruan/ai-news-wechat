@@ -1,8 +1,8 @@
 import urllib.request
-import urllib.parse
 import xml.etree.ElementTree as ET
 import json
 import os
+
 
 RSS_SOURCES = {
     "Ars Technica": "https://feeds.arstechnica.com/arstechnica/technology-lab",
@@ -61,45 +61,11 @@ def fetch_rss(name, url):
         return []
 
 
-def ask_ai(news):
+def call_ai(prompt):
     api_key = os.environ.get("SILICONFLOW_API_KEY")
 
     if not api_key:
         raise Exception("没有找到 SILICONFLOW_API_KEY")
-
-    news_text = "\n".join(
-        f"{i + 1}. [{item['source']}] {item['title']}"
-        for i, item in enumerate(news)
-    )
-
-    prompt = f"""
-你是一名专业的 AI 科技新闻编辑。
-
-下面是今天抓取到的新闻：
-
-{news_text}
-
-请从中筛选出最值得中国科技读者关注的 AI 新闻。
-
-筛选标准：
-1. 必须与人工智能、AI 模型、AI 公司、AI 芯片或 AI 行业重大事件有关。
-2. 优先选择影响行业较大的新闻。
-3. 普通产品更新、小工具、广告宣传、重复新闻可以淘汰。
-4. 最多选择 5 条。
-5. 按重要性从高到低排序。
-
-请严格按照下面格式输出：
-
-1. 新闻标题
-重要性：9/10
-理由：一句话说明为什么值得报道
-
-2. 新闻标题
-重要性：8/10
-理由：一句话说明为什么值得报道
-
-不要输出其他内容。
-"""
 
     payload = {
         "model": "Qwen/Qwen3-8B",
@@ -109,7 +75,7 @@ def ask_ai(news):
                 "content": prompt
             }
         ],
-        "temperature": 0.2
+        "temperature": 0.3
     }
 
     data = json.dumps(payload).encode("utf-8")
@@ -125,14 +91,138 @@ def ask_ai(news):
     )
 
     with urllib.request.urlopen(request, timeout=120) as response:
-        result = json.loads(response.read().decode("utf-8"))
+        result = json.loads(
+            response.read().decode("utf-8")
+        )
 
-    answer = result["choices"][0]["message"]["content"]
+    return result["choices"][0]["message"]["content"]
+
+
+def ask_ai(news):
+    news_text = "\n".join(
+        f"{i + 1}. [{item['source']}] {item['title']}"
+        for i, item in enumerate(news)
+    )
+
+    prompt = f"""
+你是一名专业的 AI 科技新闻编辑。
+
+下面是今天抓取到的国外科技新闻：
+
+{news_text}
+
+请从中筛选最值得中国科技读者关注的 AI 新闻。
+
+要求：
+
+1. 只选择真正与人工智能密切相关的新闻。
+2. AI 模型、AI Agent、AI 公司、AI 芯片、机器人、生成式 AI 等优先。
+3. 普通网络安全、普通科技新闻，如果和 AI 没有直接关系，不要选择。
+4. 最多选择 5 条。
+5. 按重要性从高到低排序。
+6. 不要为了凑够 5 条而选择无关新闻。
+
+严格按照下面格式输出：
+
+1. 新闻标题
+重要性：9/10
+理由：一句话说明为什么值得关注
+
+2. 新闻标题
+重要性：8/10
+理由：一句话说明为什么值得关注
+"""
+
+    result = call_ai(prompt)
 
     print("\n========== AI 筛选结果 ==========\n")
-    print(answer)
+    print(result)
 
-    return answer
+    return result
+
+
+def generate_article(selected_news):
+    prompt = f"""
+你是一名优秀的中文科技公众号主编。
+
+下面是今天筛选出来的 AI 重大新闻：
+
+{selected_news}
+
+请根据这些新闻，写一篇适合微信公众号发布的中文科技文章。
+
+文章要求：
+
+【整体风格】
+- 面向普通科技爱好者和程序员
+- 中文表达自然、通俗、有信息量
+- 不要写得像机器生成的新闻摘要
+- 可以适当加入你的分析和观点
+- 不要夸张标题党
+- 不要编造新闻中没有出现的事实
+
+【文章结构】
+
+第一部分：标题
+
+生成一个吸引人的中文标题。
+
+第二部分：开头导语
+
+用 2～3 段话介绍今天 AI 圈最值得关注的变化。
+
+第三部分：新闻正文
+
+按照重要性依次介绍每条新闻。
+
+每条新闻使用：
+
+### 1. 新闻标题
+
+然后写：
+
+发生了什么？
+
+为什么重要？
+
+对 AI 行业有什么影响？
+
+普通人/程序员应该关注什么？
+
+每条新闻大约 300～500 字。
+
+第四部分：今日总结
+
+用 2～3 段话总结今天 AI 行业最值得关注的趋势。
+
+第五部分：结尾
+
+写一段适合微信公众号的结语，引导读者关注后续 AI 发展。
+
+【重要】
+- 全文使用简体中文。
+- 不要使用 Markdown 表格。
+- 不要输出“以下是文章”“好的”等无关内容。
+- 直接输出完整文章。
+- 不要虚构具体数据、人物言论或事件细节。
+"""
+
+    article = call_ai(prompt)
+
+    print("\n\n")
+    print("=" * 60)
+    print("========== AI 公众号文章 ==========")
+    print("=" * 60)
+    print("\n")
+
+    print(article)
+
+    print("\n")
+    print("=" * 60)
+    print("========== 文章生成完成 ==========")
+    print("=" * 60)
+
+    return article
 
 
 if __name__ == "__main__":
@@ -147,8 +237,14 @@ if __name__ == "__main__":
     print(f"\n总共抓取 {len(all_news)} 条新闻")
 
     if all_news:
-        ask_ai(all_news)
+
+        # 第一步：AI筛选新闻
+        selected_news = ask_ai(all_news)
+
+        # 第二步：AI生成公众号文章
+        generate_article(selected_news)
+
     else:
         print("没有抓到新闻，跳过 AI 筛选。")
 
-    print("\nAI 新闻筛选任务完成！")
+    print("\nAI 新闻自动化任务完成！")
