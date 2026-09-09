@@ -41,7 +41,7 @@ def fetch_rss(source_name, url):
             }
         )
 
-        with urllib.request.urlopen(req, timeout=30) as response:
+        with urllib.request.urlopen(req, timeout=120) as response:
             data = response.read()
 
         root = ET.fromstring(data)
