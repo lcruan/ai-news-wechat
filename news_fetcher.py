@@ -1,118 +1,200 @@
 import os
 import json
-import urllib.request
-import xml.etree.ElementTree as ET
-from html import unescape
-import re
 import time
+import re
+import urllib.request
+import urllib.error
+import xml.etree.ElementTree as ET
+from datetime import datetime, timezone, timedelta
 
 
+# ============================================================
+# 基础配置
+# ============================================================
+
+SILICONFLOW_API_KEY = os.environ.get("SILICONFLOW_API_KEY")
+
+AI_API_URL = "https://api.siliconflow.cn/v1/chat/completions"
+
+AI_MODEL = "Qwen/Qwen3-8B"
+
+# SiliconFlow 请求超时时间
+AI_TIMEOUT = 120
+
+# 最大重试次数
+MAX_RETRIES = 3
+
+# 每次失败后等待
+RETRY_WAIT = 5
+
+# RSS 新闻源
 RSS_SOURCES = {
     "Ars Technica": "https://feeds.arstechnica.com/arstechnica/technology-lab",
     "MIT Technology Review": "https://www.technologyreview.com/feed/",
 }
 
-API_URL = "https://api.siliconflow.cn/v1/chat/completions"
-MODEL = "Qwen/Qwen3-8B"
 
+# ============================================================
+# 工具函数
+# ============================================================
 
 def clean_text(text):
-    """清理 HTML 标签和多余空白"""
+    """
+    清理 HTML、空白字符等。
+    """
 
     if not text:
         return ""
 
-    text = unescape(text)
     text = re.sub(r"<[^>]+>", " ", text)
     text = re.sub(r"\s+", " ", text)
 
     return text.strip()
 
 
-def fetch_rss(source_name, url):
-    """获取 RSS 新闻"""
+def get_beijing_date():
+    """
+    获取北京时间日期。
+    """
+
+    beijing_tz = timezone(timedelta(hours=8))
+
+    now = datetime.now(beijing_tz)
+
+    return now.strftime("%Y年%m月%d日")
+
+
+# ============================================================
+# RSS 抓取
+# ============================================================
+
+def fetch_rss(source_name, rss_url):
+    """
+    抓取 RSS / Atom。
+    """
 
     print(f"\n正在抓取：{source_name}")
+    print(f"RSS：{rss_url}")
 
     try:
-        req = urllib.request.Request(
-            url,
+
+        request = urllib.request.Request(
+            rss_url,
             headers={
-                "User-Agent": "Mozilla/5.0"
+                "User-Agent": "Mozilla/5.0 AI-News-Bot"
             }
         )
 
-        # RSS 请求保持 120 秒
-        with urllib.request.urlopen(req, timeout=120) as response:
+        with urllib.request.urlopen(
+            request,
+            timeout=30
+        ) as response:
+
             data = response.read()
 
         root = ET.fromstring(data)
 
         news_list = []
 
-        # =========================
-        # RSS 格式
-        # =========================
+        # ----------------------------------------------------
+        # RSS
+        # ----------------------------------------------------
 
-        for item in root.findall(".//item"):
+        items = root.findall(".//item")
 
-            title = item.findtext("title", "")
-            summary = item.findtext("description", "")
-            link = item.findtext("link", "")
-            pub_date = item.findtext("pubDate", "")
+        if items:
 
-            if not title:
-                continue
+            for item in items:
 
-            news_list.append({
-                "source": source_name,
-                "title": clean_text(title),
-                "summary": clean_text(summary)[:1500],
-                "link": link.strip(),
-                "pub_date": pub_date.strip(),
-            })
+                title = item.findtext("title", default="")
+                summary = item.findtext("description", default="")
+                link = item.findtext("link", default="")
+                pub_date = item.findtext("pubDate", default="")
 
-        # =========================
-        # Atom 格式
-        # =========================
+                title = clean_text(title)
+                summary = clean_text(summary)
+                link = clean_text(link)
+                pub_date = clean_text(pub_date)
+
+                if not title:
+                    continue
+
+                news_list.append({
+                    "source": source_name,
+                    "title": title,
+                    "summary": summary,
+                    "link": link,
+                    "pub_date": pub_date
+                })
+
+        # ----------------------------------------------------
+        # Atom
+        # ----------------------------------------------------
 
         if not news_list:
 
-            ns = {
+            namespaces = {
                 "atom": "http://www.w3.org/2005/Atom"
             }
 
-            for entry in root.findall(".//atom:entry", ns):
+            entries = root.findall(
+                ".//atom:entry",
+                namespaces
+            )
 
-                title = entry.findtext(
+            for entry in entries:
+
+                title_element = entry.find(
                     "atom:title",
-                    "",
-                    ns
+                    namespaces
                 )
 
-                summary = entry.findtext(
+                summary_element = entry.find(
                     "atom:summary",
-                    "",
-                    ns
+                    namespaces
                 )
 
-                updated = entry.findtext(
-                    "atom:updated",
-                    "",
-                    ns
+                content_element = entry.find(
+                    "atom:content",
+                    namespaces
                 )
 
-                published = entry.findtext(
+                published_element = entry.find(
                     "atom:published",
-                    "",
-                    ns
+                    namespaces
                 )
+
+                updated_element = entry.find(
+                    "atom:updated",
+                    namespaces
+                )
+
+                title = ""
+
+                if title_element is not None:
+                    title = title_element.text or ""
+
+                summary = ""
+
+                if summary_element is not None:
+                    summary = summary_element.text or ""
+
+                if not summary and content_element is not None:
+                    summary = content_element.text or ""
+
+                pub_date = ""
+
+                if published_element is not None:
+                    pub_date = published_element.text or ""
+
+                if not pub_date and updated_element is not None:
+                    pub_date = updated_element.text or ""
 
                 link = ""
 
                 link_element = entry.find(
                     "atom:link",
-                    ns
+                    namespaces
                 )
 
                 if link_element is not None:
@@ -121,51 +203,61 @@ def fetch_rss(source_name, url):
                         ""
                     )
 
+                title = clean_text(title)
+                summary = clean_text(summary)
+                link = clean_text(link)
+                pub_date = clean_text(pub_date)
+
                 if not title:
                     continue
 
                 news_list.append({
                     "source": source_name,
-                    "title": clean_text(title),
-                    "summary": clean_text(summary)[:1500],
-                    "link": link.strip(),
-                    "pub_date": (
-                        published.strip()
-                        if published
-                        else updated.strip()
-                    ),
+                    "title": title,
+                    "summary": summary,
+                    "link": link,
+                    "pub_date": pub_date
                 })
 
         print(
-            f"{source_name} 获取 {len(news_list)} 条新闻"
+            f"{source_name} 抓取到 "
+            f"{len(news_list)} 条新闻"
         )
 
-        # 每个新闻源最多取 10 条
-        return news_list[:10]
+        return news_list
 
     except Exception as e:
 
         print(
-            f"{source_name} 抓取失败：{e}"
+            f"{source_name} RSS 抓取失败：{e}"
         )
 
         return []
 
 
-def call_ai(prompt):
-    """调用 SiliconFlow，失败后自动重试"""
+# ============================================================
+# SiliconFlow AI
+# ============================================================
 
-    api_key = os.environ.get(
-        "SILICONFLOW_API_KEY"
-    )
+def call_ai(prompt, max_tokens=1800):
+    """
+    调用 SiliconFlow。
 
-    if not api_key:
+    保留：
+    - 120 秒超时
+    - 最多重试 3 次
+    - 每次失败等待 5 秒
+    """
+
+    if not SILICONFLOW_API_KEY:
+
         raise RuntimeError(
             "没有找到 SILICONFLOW_API_KEY"
         )
 
     payload = {
-        "model": MODEL,
+        "model": AI_MODEL,
+
         "messages": [
             {
                 "role": "user",
@@ -173,11 +265,9 @@ def call_ai(prompt):
             }
         ],
 
-        # 降低随机性
         "temperature": 0.2,
 
-        # 限制输出长度
-        "max_tokens": 1800
+        "max_tokens": max_tokens
     }
 
     data = json.dumps(
@@ -185,242 +275,253 @@ def call_ai(prompt):
         ensure_ascii=False
     ).encode("utf-8")
 
-    # 最多尝试 3 次
-    for attempt in range(1, 4):
+    request = urllib.request.Request(
+        AI_API_URL,
+        data=data,
+        headers={
+            "Content-Type": "application/json",
+            "Authorization":
+                f"Bearer {SILICONFLOW_API_KEY}"
+        },
+        method="POST"
+    )
+
+    last_error = None
+
+    for attempt in range(1, MAX_RETRIES + 1):
+
+        print(
+            f"\n正在调用 SiliconFlow，"
+            f"第 {attempt}/{MAX_RETRIES} 次..."
+        )
 
         try:
 
-            print(
-                f"\n正在调用 SiliconFlow，"
-                f"第 {attempt}/3 次..."
-            )
-
-            request = urllib.request.Request(
-                API_URL,
-                data=data,
-                headers={
-                    "Content-Type": "application/json",
-                    "Authorization": (
-                        f"Bearer {api_key}"
-                    )
-                },
-                method="POST"
-            )
-
-            # SiliconFlow 请求保持 120 秒
             with urllib.request.urlopen(
                 request,
-                timeout=120
+                timeout=AI_TIMEOUT
             ) as response:
 
                 result = json.loads(
                     response.read().decode("utf-8")
                 )
 
-            print(
-                "SiliconFlow 调用成功"
+            content = (
+                result["choices"][0]
+                ["message"]["content"]
             )
 
-            return result["choices"][0]["message"]["content"]
+            print("SiliconFlow 调用成功")
+
+            return content
 
         except Exception as e:
 
-            print(
-                f"第 {attempt} 次调用失败：{e}"
-            )
-
-            if attempt == 3:
-                raise
+            last_error = e
 
             print(
-                "等待 5 秒后重试..."
+                f"SiliconFlow 调用失败：{e}"
             )
 
-            time.sleep(5)
+            if attempt < MAX_RETRIES:
+
+                print(
+                    f"{RETRY_WAIT} 秒后自动重试..."
+                )
+
+                time.sleep(RETRY_WAIT)
+
+    raise RuntimeError(
+        f"SiliconFlow 连续 {MAX_RETRIES} 次调用失败："
+        f"{last_error}"
+    )
 
 
-def ask_ai(news_list):
-    """让 AI 严格筛选 AI 新闻"""
+# ============================================================
+# 构建新闻资料
+# ============================================================
 
-    news_text = ""
+def build_news_context(all_news):
+    """
+    把 RSS 新闻整理成 AI 可以读取的资料。
+    """
+
+    blocks = []
 
     for index, news in enumerate(
-        news_list,
-        1
+        all_news,
+        start=1
     ):
 
-        news_text += f"""
-
+        block = f"""
 【新闻 {index}】
 
-来源：
-{news["source"]}
+来源：{news.get("source", "")}
 
 标题：
-{news["title"]}
+{news.get("title", "")}
 
 摘要：
-{news["summary"]}
+{news.get("summary", "")}
 
 发布时间：
-{news["pub_date"]}
+{news.get("pub_date", "")}
 
 原文链接：
-{news["link"]}
+{news.get("link", "")}
 """
 
+        blocks.append(block)
+
+    return "\n".join(blocks)
+
+
+# ============================================================
+# AI 初步筛选
+# ============================================================
+
+def ask_ai(all_news):
+
+    print(
+        "\n========== 开始 AI 新闻筛选 =========="
+    )
+
+    news_context = build_news_context(
+        all_news
+    )
+
     prompt = f"""
-你是一名非常严格的中文 AI 科技新闻编辑。
+你是一名非常严格的 AI 科技新闻编辑。
 
-下面是从科技媒体 RSS 获取的真实新闻。
+现在需要从下面的新闻资料中筛选真正值得发布到
+“AI 新闻公众号”的新闻。
 
-你的任务是筛选真正值得发布为
-“AI新闻”的内容。
+新闻资料：
 
-==================================================
-一、最重要的判断标准
-==================================================
+{news_context}
 
-请先问自己：
 
-“如果把 AI 两个字从这篇新闻里删除，
-这篇新闻还成立吗？”
+==============================
+筛选标准
+==============================
 
-如果答案是“是”，并且 AI 只是顺带提到，
-那么：
+一、必须是真正的 AI 核心新闻
 
-is_ai = false
+只有满足以下条件才能 is_ai=true：
 
-例如：
+AI、人工智能、AI Agent、大模型、机器学习、
+生成式 AI、AI 安全、AI 研究、AI 芯片等必须是
+新闻的核心主题。
 
-微软发布大量普通安全补丁，
-只是因为 AI 可能增加攻击风险而提到 AI。
+请使用一个非常重要的判断：
 
-这种新闻不是 AI 核心新闻。
+“如果把 AI 相关内容从这篇新闻中删除，
+这篇新闻本身是否仍然成立？”
 
-又例如：
+如果答案是“是”，而 AI 只是顺带出现，
+则必须：
 
-VMware、云计算、企业软件、
-商业策略等新闻只是顺带提到 AI。
+is_ai=false
 
-也不要选择。
 
-==================================================
-二、真正可以选择的 AI 新闻
-==================================================
+二、严格排除：
 
-优先选择：
+- 普通网络安全新闻
+- 普通软件新闻
+- 普通云计算新闻
+- 普通硬件新闻
+- 普通机器人新闻
+- 普通企业新闻
+- 普通商业新闻
+- 普通能源新闻
+- 普通科学新闻
+- 普通汽车新闻
+- 普通芯片新闻
 
-1. AI 模型重大更新。
+除非 AI 本身就是核心。
 
-2. LLM、生成式 AI、多模态 AI
-   等重大技术进展。
 
-3. AI Agent 重大进展。
+三、严格排除综合型文章
 
-4. AI 公司重大产品或战略变化。
+以下类型原则上不要选择：
 
-5. AI 安全重大事件。
+- The Download
+- Newsletter
+- weekly roundup
+- daily roundup
+- and more
+- 科技简报
+- 本周还有……
+- 今日还有……
+- 一个标题同时讨论多个完全不同领域
 
-6. AI 研究重大突破。
+如果一篇文章只是一个综合新闻简报，
+即使其中包含 AI 新闻，也：
 
-7. AI 芯片、AI 算力、AI 数据中心等
-   明确以 AI 为核心的重大产业新闻。
+is_ai=false
 
-8. AI 监管、治理等重大事件。
 
-==================================================
-三、严格排除
-==================================================
+四、重大程度
 
-以下内容不要选择：
+is_major=true 必须意味着：
 
-1. 普通网络安全新闻。
+- 重要 AI 产品/模型发布
+- 重要 AI 研究突破
+- 重要 AI 公司重大事件
+- 重大 AI 安全事件
+- AI 行业重大政策
+- AI Agent 重大进展
+- 对 AI 行业有明显影响的事件
 
-2. 普通软件新闻。
+普通的小更新不要选择。
 
-3. 普通云计算新闻。
 
-4. 普通机器人新闻。
-
-5. 普通硬件新闻。
-
-6. 普通商业新闻。
-
-7. 普通企业新闻。
-
-8. 电池、汽车、芯片等新闻只是顺带提到 AI。
-
-9. AI 只是文章背景，而不是新闻核心。
-
-10. 无法通过标题和摘要确认 AI 是核心主题。
-
-==================================================
-四、新闻价值
-==================================================
-
-score 只能根据提供的新闻资料判断。
-
-9-10：
-重大 AI 事件。
-
-7-8：
-明显具有行业价值的重要 AI 新闻。
-
-低于 7：
-不要选择。
-
-==================================================
 五、重复新闻
-==================================================
 
-如果多篇新闻实际上讲的是同一个事件：
+如果多篇新闻报道的是同一个事件：
 
-只保留最重要的一篇。
+duplicate_group 必须尽量保持一致。
 
 例如：
 
-A：OpenAI宣布数学研究突破
+openai-sandbox-security
 
-B：OpenAI数学突破引发争议
+而不是人为拆成：
 
-如果明显是同一个事件，
-不要同时选择。
+openai-sandbox-escape
+openai-rogue-agents
 
-==================================================
-六、事实限制
-==================================================
 
-只能根据：
+六、不要凑数量
 
-- 标题
-- 摘要
-- 来源
-- 发布时间
-- 原文链接
+宁可只返回 1～3 条真正重要的 AI 新闻，
+也不要为了凑够 5 条而选择质量较差的新闻。
 
-进行判断。
 
-禁止：
+七、事实限制
 
-- 使用自己的知识补充
-- 猜测文章内容
-- 编造事实
-- 编造数字
-- 编造人物
-- 编造公司
-- 编造时间
-- 编造事件经过
+你只能根据提供的：
 
-==================================================
-七、输出格式
-==================================================
+标题
+摘要
+来源
+发布时间
+原文链接
+
+判断新闻。
+
+不要使用你自己的知识补充新闻事实。
+
+
+==============================
+输出格式
+==============================
 
 只输出 JSON 数组。
 
 不要输出 Markdown。
 
-不要输出其他文字。
+不要输出解释。
 
 格式：
 
@@ -429,80 +530,127 @@ B：OpenAI数学突破引发争议
     "index": 1,
     "is_ai": true,
     "is_major": true,
-    "duplicate_group": "unique-event-1",
+    "duplicate_group": "xxx",
     "score": 9,
-    "reason": "AI是新闻核心，并且具有较高新闻价值"
+    "reason": "简短说明为什么这是 AI 核心新闻"
   }}
 ]
 
-字段：
+score 范围：
 
-index：
-新闻编号。
+1～10。
 
-is_ai：
-AI是否为新闻核心主题。
+只有 score >= 7 的新闻才应该返回。
 
-is_major：
-是否具有足够新闻价值。
+再次强调：
 
-duplicate_group：
-同一事件使用相同名称。
-不同事件使用不同名称。
-
-score：
-新闻价值，1-10。
-
-reason：
-一句话说明判断原因。
-
-==================================================
-新闻资料
-==================================================
-
-{news_text}
+宁可少选，不要凑数。
 """
 
-    result = call_ai(prompt)
+    result = call_ai(
+        prompt,
+        max_tokens=1800
+    )
 
-    print("\n========== AI 原始筛选结果 ==========")
+    print(
+        "\n========== AI 原始筛选结果 =========="
+    )
+
     print(result)
 
-    return result
+    # --------------------------------------------------------
+    # 清理 Markdown JSON
+    # --------------------------------------------------------
+
+    result = result.strip()
+
+    if result.startswith("```"):
+
+        result = re.sub(
+            r"^```(?:json)?",
+            "",
+            result,
+            flags=re.IGNORECASE
+        )
+
+        result = re.sub(
+            r"```$",
+            "",
+            result
+        )
+
+        result = result.strip()
+
+    try:
+
+        selected_news = json.loads(
+            result
+        )
+
+        if not isinstance(
+            selected_news,
+            list
+        ):
+
+            raise ValueError(
+                "AI 返回结果不是数组"
+            )
+
+        return selected_news
+
+    except Exception as e:
+
+        print(
+            f"AI JSON 解析失败：{e}"
+        )
+
+        print(
+            "原始 AI 返回："
+        )
+
+        print(result)
+
+        return []
 
 
-def filter_selected_news(selected_news, all_news):
-    """
-    程序再次过滤 AI 结果。
+# ============================================================
+# 程序二次过滤
+# ============================================================
 
-    不完全相信 AI，
-    由程序执行第二层保险。
-    """
+def filter_selected_news(
+    selected_news,
+    all_news
+):
 
-    print("\n========== 程序二次过滤 ==========")
+    print(
+        "\n========== 程序二次过滤 =========="
+    )
 
     valid_news = []
+
+    # --------------------------------------------------------
+    # 第一层：AI 判断字段
+    # --------------------------------------------------------
 
     for item in selected_news:
 
         try:
-            index = int(item.get("index", 0))
+
+            index = int(
+                item.get(
+                    "index",
+                    0
+                )
+            )
+
         except Exception:
+
             continue
 
-        is_ai = item.get("is_ai", False)
-        is_major = item.get("is_major", False)
-
-        try:
-            score = int(item.get("score", 0))
-        except Exception:
-            score = 0
-
-        # -------------------------
-        # 1. index 必须合法
-        # -------------------------
-
-        if index < 1 or index > len(all_news):
+        if (
+            index < 1
+            or index > len(all_news)
+        ):
 
             print(
                 f"过滤：新闻 {index}，index 无效"
@@ -510,9 +658,28 @@ def filter_selected_news(selected_news, all_news):
 
             continue
 
-        # -------------------------
-        # 2. 必须是真正 AI 新闻
-        # -------------------------
+        is_ai = item.get(
+            "is_ai",
+            False
+        )
+
+        is_major = item.get(
+            "is_major",
+            False
+        )
+
+        try:
+
+            score = int(
+                item.get(
+                    "score",
+                    0
+                )
+            )
+
+        except Exception:
+
+            score = 0
 
         if is_ai is not True:
 
@@ -523,10 +690,6 @@ def filter_selected_news(selected_news, all_news):
 
             continue
 
-        # -------------------------
-        # 3. 必须有足够新闻价值
-        # -------------------------
-
         if is_major is not True:
 
             print(
@@ -535,10 +698,6 @@ def filter_selected_news(selected_news, all_news):
             )
 
             continue
-
-        # -------------------------
-        # 4. 分数至少 7
-        # -------------------------
 
         if score < 7:
 
@@ -549,22 +708,65 @@ def filter_selected_news(selected_news, all_news):
 
             continue
 
+        news = all_news[index - 1]
+
+        title = news.get(
+            "title",
+            ""
+        ).lower()
+
+        # ----------------------------------------------------
+        # 第二层：程序识别综合型文章
+        # ----------------------------------------------------
+
+        roundup_keywords = [
+            "the download",
+            "newsletter",
+            "weekly roundup",
+            "daily roundup",
+            "roundup:",
+            "and more",
+            "this week in",
+            "today in tech",
+        ]
+
+        is_roundup = any(
+            keyword in title
+            for keyword in roundup_keywords
+        )
+
+        if is_roundup:
+
+            print(
+                f"过滤：新闻 {index}，"
+                f"疑似综合型文章："
+                f"{news.get('title', '')}"
+            )
+
+            continue
+
         valid_news.append(item)
 
-    # =========================
-    # 按分数从高到低排序
-    # =========================
+    # --------------------------------------------------------
+    # 按分数排序
+    # --------------------------------------------------------
 
     valid_news.sort(
-        key=lambda x: int(x.get("score", 0)),
+        key=lambda x: int(
+            x.get(
+                "score",
+                0
+            )
+        ),
         reverse=True
     )
 
-    # =========================
-    # 同一事件去重
-    # =========================
+    # --------------------------------------------------------
+    # 第三层：duplicate_group 去重
+    # --------------------------------------------------------
 
     unique_news = []
+
     duplicate_groups = set()
 
     for item in valid_news:
@@ -574,37 +776,131 @@ def filter_selected_news(selected_news, all_news):
                 "duplicate_group",
                 ""
             )
-        ).strip()
+        ).strip().lower()
 
         if not group:
-            group = f"news-{item['index']}"
+
+            group = (
+                f"news-{item['index']}"
+            )
 
         if group in duplicate_groups:
 
             print(
-                f"过滤：新闻 {item['index']}，"
-                f"与其他新闻属于同一事件：{group}"
+                f"过滤：新闻 "
+                f"{item['index']}，"
+                f"属于重复事件："
+                f"{group}"
             )
 
             continue
 
-        duplicate_groups.add(group)
+        duplicate_groups.add(
+            group
+        )
 
-        unique_news.append(item)
+        unique_news.append(
+            item
+        )
 
-    # =========================
-    # 最多保留 5 条
-    # =========================
+    # --------------------------------------------------------
+    # 第四层：简单标题相似度去重
+    # --------------------------------------------------------
 
-    unique_news = unique_news[:5]
+    final_news = []
 
-    print(
-        f"\n最终保留 {len(unique_news)} 条新闻"
-    )
+    title_keywords_groups = []
 
     for item in unique_news:
 
-        index = item["index"]
+        index = int(
+            item["index"]
+        )
+
+        title = all_news[
+            index - 1
+        ].get(
+            "title",
+            ""
+        ).lower()
+
+        # 提取一些明显的核心实体
+        keywords = set()
+
+        important_words = [
+            "openai",
+            "anthropic",
+            "google",
+            "microsoft",
+            "meta",
+            "nvidia",
+            "deepseek",
+            "qwen",
+            "gemini",
+            "chatgpt",
+            "agent",
+            "agents",
+            "sandbox",
+            "math",
+            "mathematics",
+            "ai",
+        ]
+
+        for word in important_words:
+
+            if word in title:
+
+                keywords.add(word)
+
+        is_similar = False
+
+        for old_keywords in title_keywords_groups:
+
+            common = (
+                keywords
+                & old_keywords
+            )
+
+            # 两个标题共享至少两个核心词，
+            # 且核心词明显相同，
+            # 认为可能属于同一事件。
+            if len(common) >= 2:
+
+                print(
+                    f"过滤：新闻 {index}，"
+                    f"疑似与已有新闻重复："
+                    f"{common}"
+                )
+
+                is_similar = True
+
+                break
+
+        if is_similar:
+
+            continue
+
+        title_keywords_groups.append(
+            keywords
+        )
+
+        final_news.append(
+            item
+        )
+
+    # 最多 5 条
+    final_news = final_news[:5]
+
+    print(
+        f"\n最终保留 "
+        f"{len(final_news)} 条新闻"
+    )
+
+    for item in final_news:
+
+        index = int(
+            item["index"]
+        )
 
         print(
             f"- 新闻 {index} | "
@@ -612,258 +908,178 @@ def filter_selected_news(selected_news, all_news):
             f"{all_news[index - 1]['title']}"
         )
 
-    return unique_news
+    return final_news
 
 
-def generate_article(selected_news, all_news):
-    """根据真实新闻信息生成公众号文章"""
+# ============================================================
+# 生成公众号文章
+# ============================================================
 
-    news_text = ""
-
-    for item in selected_news:
-
-        index = item["index"]
-
-        if (
-            not isinstance(index, int)
-            or index < 1
-            or index > len(all_news)
-        ):
-            continue
-
-        news = all_news[index - 1]
-
-        news_text += f"""
-
-【新闻 {index}】
-
-来源：
-{news["source"]}
-
-标题：
-{news["title"]}
-
-摘要：
-{news["summary"]}
-
-发布时间：
-{news["pub_date"]}
-
-原文链接：
-{news["link"]}
-"""
-
-    prompt = f"""
-你是一名中文科技公众号编辑。
-
-请根据下面提供的真实新闻资料，
-写一篇适合微信公众号发布的
-AI 科技新闻文章。
-
-==================================================
-写作要求
-==================================================
-
-1. 使用简体中文。
-
-2. 语言自然、简洁。
-
-3. 像真实科技媒体编辑，
-   不要有明显 AI 生成腔。
-
-4. 不要频繁使用：
-
-“这意味着”
-“值得注意的是”
-“重新定义”
-“再次证明”
-“正在重塑”
-“未来可期”
-
-等套话。
-
-5. 开头用 2-3 句话概括今天的 AI 动态。
-
-6. 每条新闻单独介绍。
-
-7. 每条新闻包含：
-
-- 新闻标题
-- 发生了什么
-- 为什么值得关注
-
-8. 新闻标题可以稍微润色，
-   但不能改变原始事实。
-
-9. 不要夸张。
-
-10. 不要把推测写成事实。
-
-11. 不要添加资料中不存在的信息。
-
-12. 如果摘要信息不足，
-    就少写。
-
-==================================================
-事实安全规则
-==================================================
-
-只能使用我提供的：
-
-- 来源
-- 标题
-- 摘要
-- 发布时间
-- 原文链接
-
-禁止：
-
-- 使用你自己的知识补充
-- 根据标题猜测细节
-- 编造人物
-- 编造数字
-- 编造时间
-- 编造产品
-- 编造公司
-- 编造事件经过
-- 编造研究结果
-- 编造背景
-
-如果资料没有明确说明，
-不要写。
-
-==================================================
-来源格式
-==================================================
-
-每条新闻最后写：
-
-来源：XXX
-
-原文：
-XXX
-
-==================================================
-新闻资料
-==================================================
-
-{news_text}
-"""
-
-    article = call_ai(prompt)
-
-    return article
-
-
-def main():
-
-    print(
-        "========== AI 新闻自动化开始 =========="
-    )
-
-    all_news = []
-
-    # =========================
-    # 1. 抓取 RSS
-    # =========================
-
-    for source_name, url in RSS_SOURCES.items():
-
-        news = fetch_rss(
-            source_name,
-            url
-        )
-
-        all_news.extend(news)
-
-    print(
-        f"\n总共获取 {len(all_news)} 条新闻"
-    )
-
-    if not all_news:
-
-        print(
-            "没有获取到新闻"
-        )
-
-        return
-
-    # =========================
-    # 2. AI 初步筛选
-    # =========================
-
-    selected_result = ask_ai(
-        all_news
-    )
-
-    try:
-
-        selected_news = json.loads(
-            selected_result
-        )
-
-    except Exception as e:
-
-        print(
-            "\nAI 返回的 JSON 解析失败：",
-            e
-        )
-
-        print(
-            selected_result
-        )
-
-        return
-
-    if not selected_news:
-
-        print(
-            "AI 没有筛选出新闻"
-        )
-
-        return
-
-    # =========================
-    # 3. 程序二次过滤
-    # =========================
-
-    selected_news = filter_selected_news(
-        selected_news,
-        all_news
-    )
-
-    if not selected_news:
-
-        print(
-            "\n经过严格过滤后，"
-            "今天没有符合要求的 AI 新闻。"
-        )
-
-        return
-
-    # =========================
-    # 4. AI 生成文章
-    # =========================
+def generate_article(
+    selected_news,
+    all_news
+):
 
     print(
         "\n========== 开始生成公众号文章 =========="
     )
 
-    article = generate_article(
-        selected_news,
-        all_news
+    article_news = []
+
+    for item in selected_news:
+
+        index = int(
+            item["index"]
+        )
+
+        news = all_news[
+            index - 1
+        ]
+
+        article_news.append({
+            "index": index,
+            "source": news.get(
+                "source",
+                ""
+            ),
+            "title": news.get(
+                "title",
+                ""
+            ),
+            "summary": news.get(
+                "summary",
+                ""
+            ),
+            "pub_date": news.get(
+                "pub_date",
+                ""
+            )
+        })
+
+    news_context = json.dumps(
+        article_news,
+        ensure_ascii=False,
+        indent=2
     )
 
-    print(
-        "\n========== AI 公众号文章 ==========\n"
-    )
+    beijing_date = get_beijing_date()
 
-    print(article)
+    prompt = f"""
+你是一名中文科技公众号编辑。
 
-    print(
-        "\n========== 任务完成 =========="
-    )
+今天是 {beijing_date}。
+
+请根据下面提供的新闻资料，
+写一篇适合微信公众号发布的中文 AI 新闻文章。
 
 
-if __name__ == "__main__":
-    main()
+==============================
+最重要的原则：禁止编造事实
+==============================
+
+你只能使用下面资料中明确出现的信息：
+
+- 新闻标题
+- 新闻摘要
+- 来源
+- 发布时间
+
+严禁使用你自己的知识补充事实。
+
+特别禁止：
+
+- 自己补充数字
+- 自己补充人物观点
+- 自己补充专家观点
+- 自己补充“业内人士表示”
+- 自己补充“学术界认为”
+- 自己补充公司内部信息
+- 自己补充没有出现在资料里的技术细节
+- 自己猜测事件原因
+- 自己猜测事件后果
+- 自己虚构采访
+- 自己虚构数据
+
+
+如果资料没有明确说明：
+
+“为什么值得关注”
+
+就不要强行分析。
+
+可以使用非常克制的总结，
+但必须明显属于基于资料的概括。
+
+
+==============================
+新闻资料
+==============================
+
+{news_context}
+
+
+==============================
+文章要求
+==============================
+
+1. 使用自然的中文。
+
+2. 不要有明显的 AI 腔。
+
+避免大量使用：
+
+“这意味着”
+“值得注意的是”
+“重新定义”
+“正在改变”
+“引发行业深思”
+“未来可期”
+“具有里程碑意义”
+
+除非资料本身确实支持。
+
+
+3. 不要写夸张标题。
+
+4. 不要虚构新闻。
+
+5. 每条新闻控制在 2～4 个自然段。
+
+6. 每条新闻按照：
+
+【新闻1】
+标题
+
+发生了什么？
+
+用资料中的事实进行简洁说明。
+
+为什么值得关注？
+
+如果资料不足，就简单写：
+“目前从公开资料来看，这一事件主要体现了……”
+但不要补充资料之外的事实。
+
+
+7. 文章开头简短。
+
+8. 文章结尾写一个非常简短的总结。
+
+9. 不要输出 URL。
+
+10. 不要输出“来源”。
+
+11. 不要输出 Markdown 链接。
+
+因为来源和 URL 将由程序自动添加。
+
+
+==============================
+输出格式
+==============================
+
+直接输出正文。
+
+不要输出：
+
+```markdown
