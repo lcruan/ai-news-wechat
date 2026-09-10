@@ -291,7 +291,14 @@ def call_ai(prompt, max_tokens=1800):
             }
         ],
         "temperature": 0.2,
-        "max_tokens": max_tokens
+        "max_tokens": max_tokens,
+
+        # ====================================================
+        # 关键修改：
+        # 关闭 Qwen3 Thinking，避免长文本生成时大量消耗
+        # 推理时间，导致 120 秒请求超时。
+        # ====================================================
+        "enable_thinking": False
     }
 
     data = json.dumps(
