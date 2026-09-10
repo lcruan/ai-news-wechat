@@ -333,7 +333,7 @@ def ask_ai(news_list):
 6. 不要为了凑数量而选择新闻。
 7. 同一个事件的不同报道，只保留一个。
 8. score 小于 7 的不要选择。
-9. 最多选择 5 条。
+9. 最多选择 5 条候选新闻，最终程序会自动选择其中最重要的 1 条。
 10. 宁可少选，也不要选择不够重要的新闻。
 
 【非常重要】
@@ -592,10 +592,11 @@ def filter_selected_news(selected_news, all_news):
         unique_news.append(item)
 
     # --------------------------------------------------------
-    # 最多 5 条
+    # --------------------------------------------------------
+    # 最终只保留 1 条最高优先级新闻
     # --------------------------------------------------------
 
-    unique_news = unique_news[:5]
+    unique_news = unique_news[:1]
 
     print(
         f"\n最终保留 {len(unique_news)} 条新闻"
@@ -871,7 +872,23 @@ def generate_article(selected_news, all_news, extracted_articles):
         "\n========== 开始生成公众号文章 =========="
     )
 
-    article_map = {}
+    if not selected_news:
+        return (
+            "【今日AI资讯】\n\n"
+            f"今天是{get_beijing_date()}，"
+            "暂时没有筛选到适合发布的 AI 主题。"
+        )
+
+    # --------------------------------------------------------
+    # 当前方案：每天只围绕 1 个最重要的 AI 新闻写 1 篇文章
+    # --------------------------------------------------------
+
+    selected = selected_news[0]
+    index = int(selected["index"])
+    news = all_news[index - 1]
+
+    # 找到对应的事实提取结果
+    article_data = {}
 
     for item in extracted_articles:
 
@@ -880,106 +897,233 @@ def generate_article(selected_news, all_news, extracted_articles):
         except Exception:
             continue
 
-        article_map[number] = item
+        if number == 1:
+            article_data = item
+            break
+
+    facts = article_data.get("facts", [])
+
+    if not isinstance(facts, list):
+        facts = []
+
+    facts = [
+        clean_generated_text(str(fact))
+        for fact in facts
+        if str(fact).strip()
+    ]
+
+    facts = [fact for fact in facts if fact]
+
+    facts_text = "\n".join(
+        f"- {fact}"
+        for fact in facts
+    )
 
     today = get_beijing_date()
 
-    lines = []
+    # --------------------------------------------------------
+    # 给 AI 的写作资料
+    # --------------------------------------------------------
 
-    lines.append("【今日AI资讯】")
-    lines.append("")
-    lines.append(
-        f"今天是{today}，整理几条值得关注的 AI 资讯。"
+    material = f"""
+日期：
+{today}
+
+来源：
+{news["source"]}
+
+原标题：
+{news["title"]}
+
+发布时间：
+{news["pub_date"]}
+
+RSS摘要：
+{news["summary"]}
+
+已经确认的事实：
+{facts_text if facts_text else "没有额外事实，只能使用原标题和RSS摘要。"}
+""".strip()
+
+    prompt = f"""
+你是一名中文科技公众号的资深编辑。
+
+今天的文章不是新闻列表，而是只围绕下面这一个 AI 新闻主题，
+写成一篇完整、自然、适合微信公众号阅读的原创中文文章。
+
+【唯一新闻主题】
+
+{material}
+
+==================================================
+【最重要的事实边界】
+==================================================
+
+你只能使用上面提供的新闻标题、RSS摘要和“已经确认的事实”。
+
+绝对不能：
+- 使用你自己的知识补充新闻细节
+- 编造人名、数字、日期、公司内部信息
+- 编造实验结果、benchmark、论文内容
+- 编造专家观点、业内观点
+- 编造新闻原文没有出现的技术细节
+- 编造新闻原文没有出现的后果或市场影响
+- 把自己的推测写成事实
+- 虚构新闻背景
+
+如果资料中没有某个信息，就不要写具体细节。
+
+可以做“编辑层面的分析”，但必须明确这是分析或思考，
+不能把分析写成新闻事实。
+
+例如：
+“如果从更大的 AI 发展趋势来看，这件事值得关注的地方在于……”
+这种表达可以使用。
+
+但不能写：
+“这意味着 AI 已经能够……”
+除非资料明确支持。
+
+==================================================
+【文章目标】
+==================================================
+
+不要写成：
+- 新闻1
+- 新闻2
+- 新闻3
+- 事实1
+- 事实2
+- 事实3
+
+必须写成“一篇完整的公众号文章”。
+
+建议文章结构：
+
+1. 一个有吸引力的标题
+
+2. 开头导语
+   用 2～4 段把读者带入这个事件。
+   第一段尽量有冲击力，但不能夸张到超出事实。
+
+3. 发生了什么？
+   用 2～4 段讲清楚这条新闻本身。
+   这里必须严格依据资料。
+
+4. 为什么这件事值得关注？
+   结合已经确认的事实进行解释。
+   可以加入合理分析，但必须明确是分析，不要伪装成事实。
+
+5. 这背后反映了什么？
+   从 AI 技术发展、AI Agent、模型能力、AI 安全、
+   AI 应用等角度选择与这条新闻真正相关的方向进行分析。
+   不相关的方向不要硬凑。
+
+6. 对普通开发者/AI 从业者有什么启发？
+   只有在确实适合的情况下写。
+   不要为了凑字数强行联系开发者。
+
+7. 写在最后
+   用 1～3 段自然收束全文。
+
+==================================================
+【写作风格】
+==================================================
+
+参考优秀中文技术公众号的阅读体验：
+
+- 口语化，但不要低幼
+- 有观点，但不要哗众取宠
+- 有技术信息，但解释要让普通技术读者看得懂
+- 段落不要太长
+- 小标题清晰
+- 可以使用加粗标记突出关键概念
+- 有自然的转折和过渡
+- 不要每一段都用“首先、其次、最后”
+- 不要出现明显的 AI 套话
+- 不要写“本文将……”
+- 不要写“让我们拭目以待”
+- 不要写“值得我们深思”
+- 不要写“在当今这个快速发展的时代”
+- 不要写“这标志着……”
+  除非资料明确支持这种判断
+
+文章目标长度：
+约 1500～2200 个中文字符。
+
+如果资料不足以支持这么长，
+宁可短一些，也不能编造事实。
+
+==================================================
+【输出格式】
+==================================================
+
+只输出文章正文。
+
+第一行是文章标题。
+
+然后直接开始正文。
+
+不要输出：
+- Markdown代码块
+- JSON
+- “来源”
+- “原文链接”
+- 新闻编号
+- 写作说明
+- 事实列表
+
+来源和原文链接由程序自动添加。
+
+现在开始写。
+"""
+
+    result = call_ai(
+        prompt,
+        max_tokens=3200
     )
-    lines.append("")
 
-    article_number = 0
+    result = result.strip()
 
-    for number, selected in enumerate(
-        selected_news,
-        start=1
-    ):
+    # --------------------------------------------------------
+    # 清理可能出现的 Markdown 代码块
+    # --------------------------------------------------------
 
-        if number not in article_map:
-            continue
+    result = re.sub(
+        r"^```(?:markdown|text)?\s*",
+        "",
+        result,
+        flags=re.IGNORECASE
+    )
 
-        article_data = article_map[number]
+    result = re.sub(
+        r"\s*```$",
+        "",
+        result
+    )
 
-        title = clean_generated_text(
-            str(
-                article_data.get(
-                    "title",
-                    ""
-                )
-            )
-        )
+    result = result.strip()
 
-        facts = article_data.get(
-            "facts",
-            []
-        )
+    # --------------------------------------------------------
+    # 清理 AI 自己可能生成的来源/链接
+    # --------------------------------------------------------
 
-        if not title:
-            continue
+    result = clean_generated_text(result)
 
-        if not isinstance(facts, list):
-            facts = []
+    if not result:
+        result = news["title"]
 
-        facts = [
-            clean_generated_text(
-                str(fact)
-            )
-            for fact in facts
-            if str(fact).strip()
-        ]
+    # --------------------------------------------------------
+    # Python 自动追加来源和原文链接
+    # 防止 AI 修改、遗漏或编造链接
+    # --------------------------------------------------------
 
-        facts = [
-            fact
-            for fact in facts
-            if fact
-        ]
-
-        if not facts:
-            continue
-
-        index = int(selected["index"])
-
-        news = all_news[index - 1]
-
-        article_number += 1
-
-        lines.append(
-            f"【新闻{article_number}】"
-        )
-        lines.append("")
-
-        lines.append(title)
-        lines.append("")
-
-        for fact in facts:
-
-            lines.append(fact)
-            lines.append("")
-
-        lines.append(
-            f"来源：{news['source']}"
-        )
-
-        lines.append(
-            f"原文：{news['link']}"
-        )
-
-        lines.append("")
-
-    if article_number == 0:
-
-        return (
-            "【今日AI资讯】\n\n"
-            f"今天是{today}，"
-            "暂时没有筛选到适合发布的 AI 资讯。"
-        )
-
-    article = "\n".join(lines)
+    article = (
+        f"{result}\n\n"
+        f"---\n\n"
+        f"**来源：** {news['source']}\n\n"
+        f"**原文：** {news['link']}"
+    )
 
     return article.strip()
 
@@ -1104,7 +1248,7 @@ def main():
     )
 
     # --------------------------------------------------------
-    # 第五步：Python 组装公众号文章
+    # 第五步：AI 生成完整公众号文章
     # --------------------------------------------------------
 
     article = generate_article(
