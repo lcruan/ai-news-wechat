@@ -21,7 +21,19 @@ jobs:
         run: |
           python3 news_fetcher.py
 
-      - name: Test WeChat API
+      - name: Check generated article
+        run: |
+          echo "========== 检查 article.json =========="
+          if [ ! -f article.json ]; then
+            echo "错误：article.json 没有生成！"
+            exit 1
+          fi
+
+          echo "article.json 已成功生成"
+          ls -lh article.json
+          echo "========================================"
+
+      - name: Submit article to WeChat draft
         env:
           WECHAT_APP_ID: ${{ secrets.WECHAT_APP_ID }}
           WECHAT_APP_SECRET: ${{ secrets.WECHAT_APP_SECRET }}
