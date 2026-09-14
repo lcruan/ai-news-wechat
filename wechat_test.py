@@ -1,59 +1,44 @@
 import os
 import json
 import re
-import mimetypes
-import uuid
+import html
 import urllib.request
 import urllib.error
 
 
 # ============================================================
-# 微信公众号配置
+# 基础配置
 # ============================================================
 
 WECHAT_APP_ID = os.environ.get("WECHAT_APP_ID")
 WECHAT_APP_SECRET = os.environ.get("WECHAT_APP_SECRET")
 
-WECHAT_TOKEN_URL = (
-    "https://api.weixin.qq.com/cgi-bin/token"
-)
+WECHAT_API_BASE = "https://api.weixin.qq.com"
 
-WECHAT_MATERIAL_UPLOAD_URL = (
-    "https://api.weixin.qq.com/cgi-bin/material/add_material"
-)
+ARTICLE_FILE = "article.json"
 
-WECHAT_DRAFT_ADD_URL = (
-    "https://api.weixin.qq.com/cgi-bin/draft/add"
-)
-
-ARTICLE_JSON_PATH = "article.json"
-
-COVER_IMAGE_PATH = "cover.jpg"
+# 你上传到 GitHub 仓库根目录的封面
+COVER_IMAGE = "cover.jpg"
 
 
 # ============================================================
-# HTTP JSON 请求
+# 微信 HTTP JSON 请求
 # ============================================================
 
 def http_json_request(
     url,
     method="GET",
     data=None,
-    timeout=60,
     headers=None
 ):
 
-    request_headers = {
-        "User-Agent": "AI-News-WeChat-Automation/1.0"
-    }
-
-    if headers:
-        request_headers.update(headers)
+    if headers is None:
+        headers = {}
 
     request = urllib.request.Request(
         url,
         data=data,
-        headers=request_headers,
+        headers=headers,
         method=method
     )
 
@@ -61,50 +46,55 @@ def http_json_request(
 
         with urllib.request.urlopen(
             request,
-            timeout=timeout
+            timeout=120
         ) as response:
 
-            response_data = response.read()
+            raw = response.read()
 
-        return json.loads(
-            response_data.decode("utf-8")
+        result = json.loads(
+            raw.decode(
+                "utf-8",
+                errors="ignore"
+            )
         )
 
     except urllib.error.HTTPError as e:
 
-        error_body = ""
-
         try:
             error_body = e.read().decode(
                 "utf-8",
-                errors="replace"
+                errors="ignore"
             )
         except Exception:
-            pass
+            error_body = ""
 
         raise RuntimeError(
-            f"微信公众号 HTTP 错误："
-            f"{e.code}，"
-            f"{error_body[:1000]}"
-        )
-
-    except urllib.error.URLError as e:
-
-        raise RuntimeError(
-            f"微信公众号网络错误：{e}"
-        )
-
-    except json.JSONDecodeError as e:
-
-        raise RuntimeError(
-            f"微信公众号返回的数据不是有效 JSON：{e}"
+            f"微信 API HTTP 错误："
+            f"{e.code} {error_body}"
         )
 
     except Exception as e:
 
         raise RuntimeError(
-            f"请求微信公众号接口失败：{e}"
+            f"微信 API 请求失败：{e}"
         )
+
+    if isinstance(result, dict):
+
+        errcode = result.get(
+            "errcode",
+            0
+        )
+
+        if errcode != 0:
+
+            raise RuntimeError(
+                "微信 API 返回错误："
+                f"errcode={errcode}, "
+                f"errmsg={result.get('errmsg')}"
+            )
+
+    return result
 
 
 # ============================================================
@@ -114,205 +104,776 @@ def http_json_request(
 def get_access_token():
 
     if not WECHAT_APP_ID:
-
         raise RuntimeError(
-            "没有找到 WECHAT_APP_ID，请检查 GitHub Secrets。"
+            "没有找到 WECHAT_APP_ID"
         )
 
     if not WECHAT_APP_SECRET:
-
         raise RuntimeError(
-            "没有找到 WECHAT_APP_SECRET，请检查 GitHub Secrets。"
+            "没有找到 WECHAT_APP_SECRET"
         )
 
-    url = (
-        f"{WECHAT_TOKEN_URL}"
-        f"?grant_type=client_credential"
-        f"&appid={WECHAT_APP_ID}"
-        f"&secret={WECHAT_APP_SECRET}"
-    )
+    print("")
+    print("=" * 50)
+    print("开始获取微信公众号 access_token")
+    print("=" * 50)
 
-    print(
-        "正在请求微信公众号 access_token..."
+    url = (
+        f"{WECHAT_API_BASE}"
+        f"/cgi-bin/token"
+        f"?grant_type=client_credential"
+        f"&appid={urllib.parse.quote(WECHAT_APP_ID)}"
+        f"&secret={urllib.parse.quote(WECHAT_APP_SECRET)}"
     )
 
     result = http_json_request(
-        url,
-        method="GET",
-        timeout=30
+        url
     )
 
-    if "access_token" not in result:
-
-        errcode = result.get(
-            "errcode"
-        )
-
-        errmsg = result.get(
-            "errmsg"
-        )
-
-        raise RuntimeError(
-            f"微信公众号返回错误："
-            f"errcode={errcode}, "
-            f"errmsg={errmsg}"
-        )
-
-    access_token = result[
+    access_token = result.get(
         "access_token"
-    ]
+    )
 
     if not access_token:
-
         raise RuntimeError(
-            "微信公众号返回的 access_token 为空。"
+            "微信没有返回 access_token"
         )
 
     print(
-        "========================================"
-    )
-
-    print(
-        "微信公众号 API 连接成功！"
-    )
-
-    print(
-        "AppID 已成功读取"
-    )
-
-    print(
-        "AppSecret 已成功读取"
-    )
-
-    print(
-        "access_token 已成功获取"
-    )
-
-    print(
-        "========================================"
+        "access_token 获取成功！"
     )
 
     return access_token
 
 
 # ============================================================
-# 上传永久素材
+# HTML 转义
+# ============================================================
+
+def escape_text(text):
+
+    if text is None:
+        return ""
+
+    return html.escape(
+        str(text),
+        quote=False
+    )
+
+
+# ============================================================
+# Markdown 清洗
+# ============================================================
+
+def clean_inline_markdown(text):
+
+    text = str(text or "")
+
+    # Markdown 链接：
+    # [文字](https://xxx)
+    text = re.sub(
+        r"\[([^\]]+)\]\([^)]+\)",
+        r"\1",
+        text
+    )
+
+    # 加粗
+    text = re.sub(
+        r"\*\*(.*?)\*\*",
+        r"<strong>\1</strong>",
+        text
+    )
+
+    # 单星号斜体
+    text = re.sub(
+        r"(?<!\*)\*([^*]+)\*(?!\*)",
+        r"\1",
+        text
+    )
+
+    # Markdown 标题
+    text = re.sub(
+        r"^#{1,6}\s*",
+        "",
+        text
+    )
+
+    # 裸 URL 删除
+    text = re.sub(
+        r"https?://\S+",
+        "",
+        text
+    )
+
+    return text.strip()
+
+
+# ============================================================
+# 处理普通段落中的加粗
+# ============================================================
+
+def render_paragraph(text):
+
+    text = str(text or "").strip()
+
+    if not text:
+        return ""
+
+    # 先保护 Markdown 加粗
+    placeholders = []
+
+    def replace_bold(match):
+
+        index = len(placeholders)
+
+        placeholders.append(
+            escape_text(
+                match.group(1)
+            )
+        )
+
+        return (
+            f"___BOLD_{index}___"
+        )
+
+    text = re.sub(
+        r"\*\*(.*?)\*\*",
+        replace_bold,
+        text
+    )
+
+    # 普通文本 HTML 转义
+    text = escape_text(
+        text
+    )
+
+    # 恢复加粗
+    for index, value in enumerate(
+        placeholders
+    ):
+
+        text = text.replace(
+            f"___BOLD_{index}___",
+            f"<strong>{value}</strong>"
+        )
+
+    # 清理 Markdown
+    text = re.sub(
+        r"\[([^\]]+)\]\([^)]+\)",
+        r"\1",
+        text
+    )
+
+    text = re.sub(
+        r"(?<!\*)\*([^*]+)\*(?!\*)",
+        r"\1",
+        text
+    )
+
+    return (
+        '<p style="'
+        'margin:10px 0;'
+        'font-size:14px;'
+        'line-height:1.8em;'
+        'letter-spacing:1px;'
+        'color:#333333;'
+        '">'
+        f"{text}"
+        "</p>"
+    )
+
+
+# ============================================================
+# 顶部导语框
+# ============================================================
+
+def render_lead(lead):
+
+    lead = str(lead or "").strip()
+
+    if not lead:
+        return ""
+
+    lead_html = render_paragraph(
+        lead
+    )
+
+    # 去掉 render_paragraph 外层 p
+    lead_html = re.sub(
+        r'^<p[^>]*>',
+        "",
+        lead_html
+    )
+
+    lead_html = re.sub(
+        r'</p>$',
+        "",
+        lead_html
+    )
+
+    return f"""
+<section style="
+    margin:10px auto;
+    padding:10px 15px;
+    background-color:rgb(242,249,255);
+    border:1px solid rgb(80,132,249);
+    box-sizing:border-box;
+    position:relative;
+">
+    <section style="
+        width:28px;
+        height:3px;
+        background-color:rgb(80,132,249);
+        margin-bottom:8px;
+    "></section>
+
+    <p style="
+        margin:0;
+        font-size:14px;
+        line-height:1.75em;
+        letter-spacing:1.5px;
+        color:rgb(51,51,51);
+    ">
+        {lead_html}
+    </p>
+
+    <section style="
+        width:28px;
+        height:3px;
+        background-color:rgb(80,132,249);
+        margin-left:auto;
+        margin-top:8px;
+    "></section>
+</section>
+""".strip()
+
+
+# ============================================================
+# 章节标题
+# ============================================================
+
+def render_section_heading(
+    number,
+    heading
+):
+
+    heading = escape_text(
+        heading
+    )
+
+    return f"""
+<section style="
+    margin:24px 0 16px 0;
+    display:flex;
+    align-items:stretch;
+    box-sizing:border-box;
+">
+    <section style="
+        width:32px;
+        min-width:32px;
+        height:32px;
+        line-height:30px;
+        text-align:center;
+        font-size:14px;
+        font-weight:bold;
+        color:rgb(80,132,249);
+        background-color:rgb(242,249,255);
+        border:1px solid rgb(80,132,249);
+        box-sizing:border-box;
+    ">
+        {number:02d}
+    </section>
+
+    <section style="
+        flex:1;
+        margin-left:8px;
+        min-height:32px;
+        padding:5px 10px;
+        background-color:rgb(242,249,255);
+        border:1px solid rgb(80,132,249);
+        color:rgb(80,132,249);
+        font-size:16px;
+        line-height:1.5em;
+        font-weight:bold;
+        box-sizing:border-box;
+    ">
+        {heading}
+    </section>
+
+    <section style="
+        width:8px;
+        min-width:8px;
+        height:32px;
+        margin-left:4px;
+        background-color:rgb(80,132,249);
+    "></section>
+</section>
+""".strip()
+
+
+# ============================================================
+# 小标题
+# ============================================================
+
+def render_subsection(
+    heading,
+    paragraph
+):
+
+    heading = escape_text(
+        heading
+    )
+
+    return f"""
+<p style="
+    margin:16px 0 8px 0;
+    font-size:15px;
+    line-height:1.7em;
+    font-weight:bold;
+    color:#333333;
+">
+    {heading}
+</p>
+
+{render_paragraph(paragraph)}
+""".strip()
+
+
+# ============================================================
+# 金句
+# ============================================================
+
+def render_highlight(text):
+
+    if not text:
+        return ""
+
+    text = escape_text(
+        text
+    )
+
+    return f"""
+<section style="
+    margin:16px 0;
+    padding:10px 12px;
+    background-color:rgb(248,251,255);
+    border-left:4px solid rgb(80,132,249);
+    box-sizing:border-box;
+">
+    <p style="
+        margin:0;
+        font-size:14px;
+        line-height:1.8em;
+        color:#333333;
+    ">
+        <strong>{text}</strong>
+    </p>
+</section>
+""".strip()
+
+
+# ============================================================
+# 列表
+# ============================================================
+
+def render_list(items):
+
+    if not items:
+        return ""
+
+    result = """
+<ul style="
+    margin:10px 0;
+    padding-left:22px;
+    font-size:14px;
+    line-height:1.8em;
+    color:#333333;
+">
+"""
+
+    for item in items:
+
+        item = escape_text(
+            item
+        )
+
+        result += f"""
+<li style="
+    margin:6px 0;
+">
+    <p style="
+        margin:0;
+        font-size:14px;
+        line-height:1.8em;
+    ">
+        {item}
+    </p>
+</li>
+"""
+
+    result += """
+</ul>
+"""
+
+    return result.strip()
+
+
+# ============================================================
+# 单个章节
+# ============================================================
+
+def render_section(
+    number,
+    section
+):
+
+    html_parts = []
+
+    html_parts.append(
+        render_section_heading(
+            number,
+            section.get(
+                "heading",
+                ""
+            )
+        )
+    )
+
+    paragraphs = section.get(
+        "paragraphs",
+        []
+    )
+
+    for paragraph in paragraphs:
+
+        paragraph_html = render_paragraph(
+            paragraph
+        )
+
+        if paragraph_html:
+            html_parts.append(
+                paragraph_html
+            )
+
+    subsections = section.get(
+        "subsections",
+        []
+    )
+
+    for subsection in subsections:
+
+        html_parts.append(
+            render_subsection(
+                subsection.get(
+                    "heading",
+                    ""
+                ),
+                subsection.get(
+                    "paragraph",
+                    ""
+                )
+            )
+        )
+
+    highlight = section.get(
+        "highlight",
+        ""
+    )
+
+    if highlight:
+
+        html_parts.append(
+            render_highlight(
+                highlight
+            )
+        )
+
+    items = section.get(
+        "list",
+        []
+    )
+
+    if items:
+
+        html_parts.append(
+            render_list(
+                items
+            )
+        )
+
+    return "\n".join(
+        html_parts
+    )
+
+
+# ============================================================
+# 微信公众号完整 HTML
+# ============================================================
+
+def build_wechat_html(article):
+
+    title = escape_text(
+        article.get(
+            "title",
+            ""
+        )
+    )
+
+    lead = article.get(
+        "lead",
+        ""
+    )
+
+    sections = article.get(
+        "sections",
+        []
+    )
+
+    ending = article.get(
+        "ending",
+        []
+    )
+
+    source = escape_text(
+        article.get(
+            "source",
+            ""
+        )
+    )
+
+    original_link = escape_text(
+        article.get(
+            "original_link",
+            ""
+        )
+    )
+
+    html_parts = []
+
+    # --------------------------------------------------------
+    # 导语
+    # --------------------------------------------------------
+
+    html_parts.append(
+        render_lead(
+            lead
+        )
+    )
+
+    # --------------------------------------------------------
+    # 01～04
+    # --------------------------------------------------------
+
+    for index, section in enumerate(
+        sections[:4],
+        start=1
+    ):
+
+        html_parts.append(
+            render_section(
+                index,
+                section
+            )
+        )
+
+    # --------------------------------------------------------
+    # 05 写在最后
+    # --------------------------------------------------------
+
+    html_parts.append(
+        render_section_heading(
+            5,
+            "写在最后"
+        )
+    )
+
+    for paragraph in ending:
+
+        paragraph_html = render_paragraph(
+            paragraph
+        )
+
+        if paragraph_html:
+            html_parts.append(
+                paragraph_html
+            )
+
+    # --------------------------------------------------------
+    # 来源
+    # --------------------------------------------------------
+
+    html_parts.append(
+        f"""
+<section style="
+    margin-top:28px;
+    padding-top:12px;
+    border-top:1px solid #eeeeee;
+">
+    <p style="
+        margin:6px 0;
+        font-size:12px;
+        line-height:1.7em;
+        color:#999999;
+    ">
+        <strong>来源：</strong>{source}
+    </p>
+
+    <p style="
+        margin:6px 0;
+        font-size:12px;
+        line-height:1.7em;
+        color:#999999;
+        word-break:break-all;
+    ">
+        <strong>原文：</strong>{original_link}
+    </p>
+</section>
+""".strip()
+    )
+
+    body = "\n".join(
+        part
+        for part in html_parts
+        if part
+    )
+
+    # 微信图文内容
+    full_html = f"""
+<div style="
+    margin:0;
+    padding:0;
+    font-family:-apple-system,BlinkMacSystemFont,
+    'Helvetica Neue','PingFang SC',
+    'Microsoft YaHei',Arial,sans-serif;
+    color:#333333;
+    font-size:14px;
+    line-height:1.8em;
+    letter-spacing:1px;
+">
+    {body}
+</div>
+""".strip()
+
+    return full_html
+
+
+# ============================================================
+# 读取 article.json
+# ============================================================
+
+def load_article():
+
+    if not os.path.exists(
+        ARTICLE_FILE
+    ):
+        raise RuntimeError(
+            f"找不到 {ARTICLE_FILE}"
+        )
+
+    with open(
+        ARTICLE_FILE,
+        "r",
+        encoding="utf-8"
+    ) as f:
+
+        article = json.load(f)
+
+    if not isinstance(
+        article,
+        dict
+    ):
+        raise RuntimeError(
+            "article.json 格式错误"
+        )
+
+    return article
+
+
+# ============================================================
+# 上传封面图片
 # ============================================================
 
 def upload_cover_image(
-    access_token,
-    image_path
+    access_token
 ):
 
-    print(
-        "\n========== 开始上传公众号封面 =========="
-    )
+    print("")
+    print("=" * 50)
+    print("开始上传公众号封面")
+    print("=" * 50)
 
-    if not os.path.exists(image_path):
-
+    if not os.path.exists(
+        COVER_IMAGE
+    ):
         raise RuntimeError(
-            f"找不到封面图片：{image_path}"
-        )
-
-    if not os.path.isfile(image_path):
-
-        raise RuntimeError(
-            f"封面路径不是文件：{image_path}"
+            f"找不到封面文件：{COVER_IMAGE}"
         )
 
     file_size = os.path.getsize(
-        image_path
+        COVER_IMAGE
     )
 
     print(
-        f"封面文件：{image_path}"
+        f"封面文件：{COVER_IMAGE}"
     )
 
     print(
         f"封面大小：{file_size} bytes"
     )
 
-    content_type, _ = mimetypes.guess_type(
-        image_path
-    )
-
-    if not content_type:
-
-        content_type = "image/jpeg"
-
-    filename = os.path.basename(
-        image_path
-    )
-
-    boundary = (
-        "----AI-News-WeChat-"
-        + uuid.uuid4().hex
-    )
-
-    body = bytearray()
-
-    body.extend(
-        (
-            f"--{boundary}\r\n"
-            f'Content-Disposition: form-data; '
-            f'name="media"; '
-            f'filename="{filename}"\r\n'
-            f"Content-Type: {content_type}\r\n"
-            f"\r\n"
-        ).encode("utf-8")
-    )
-
-    with open(
-        image_path,
-        "rb"
-    ) as image_file:
-
-        body.extend(
-            image_file.read()
-        )
-
-    body.extend(
-        (
-            f"\r\n"
-            f"--{boundary}--\r\n"
-        ).encode("utf-8")
-    )
-
     url = (
-        f"{WECHAT_MATERIAL_UPLOAD_URL}"
+        f"{WECHAT_API_BASE}"
+        f"/cgi-bin/material/add_material"
         f"?access_token={access_token}"
         f"&type=image"
     )
 
+    boundary = (
+        "----WebKitFormBoundary"
+        "AIWechatNews2026"
+    )
+
+    with open(
+        COVER_IMAGE,
+        "rb"
+    ) as f:
+        file_data = f.read()
+
+    filename = os.path.basename(
+        COVER_IMAGE
+    )
+
+    body = (
+        f"--{boundary}\r\n"
+        f'Content-Disposition: form-data; '
+        f'name="media"; filename="{filename}"\r\n'
+        f"Content-Type: image/jpeg\r\n"
+        f"\r\n"
+    ).encode("utf-8")
+
+    body += file_data
+
+    body += (
+        f"\r\n--{boundary}--\r\n"
+    ).encode("utf-8")
+
     result = http_json_request(
         url,
         method="POST",
-        data=bytes(body),
-        timeout=60,
+        data=body,
         headers={
-            "Content-Type": (
-                f"multipart/form-data; "
-                f"boundary={boundary}"
-            )
+            "Content-Type":
+                f"multipart/form-data; boundary={boundary}"
         }
     )
-
-    if "errcode" in result:
-
-        raise RuntimeError(
-            f"上传公众号封面失败："
-            f"errcode={result.get('errcode')}, "
-            f"errmsg={result.get('errmsg')}"
-        )
 
     media_id = result.get(
         "media_id"
     )
 
     if not media_id:
-
         raise RuntimeError(
-            "微信上传封面成功响应中没有 media_id。"
+            "封面上传成功但没有返回 media_id"
         )
 
     print(
@@ -327,411 +888,7 @@ def upload_cover_image(
 
 
 # ============================================================
-# Markdown → 微信公众号 HTML
-# ============================================================
-
-def escape_html(text):
-
-    text = text.replace(
-        "&",
-        "&amp;"
-    )
-
-    text = text.replace(
-        "<",
-        "&lt;"
-    )
-
-    text = text.replace(
-        ">",
-        "&gt;"
-    )
-
-    return text
-
-
-def convert_inline_markdown(text):
-
-    # --------------------------------------------------------
-    # 先保护 Markdown 链接
-    # --------------------------------------------------------
-
-    links = []
-
-    def save_link(match):
-
-        label = match.group(1)
-        url = match.group(2)
-
-        placeholder = (
-            f"___WECHAT_LINK_{len(links)}___"
-        )
-
-        links.append(
-            (placeholder, label, url)
-        )
-
-        return placeholder
-
-    text = re.sub(
-        r"\[([^\]]+)\]\((https?://[^)]+)\)",
-        save_link,
-        text
-    )
-
-    # --------------------------------------------------------
-    # HTML 转义
-    # --------------------------------------------------------
-
-    text = escape_html(
-        text
-    )
-
-    # --------------------------------------------------------
-    # 加粗
-    # --------------------------------------------------------
-
-    text = re.sub(
-        r"\*\*(.+?)\*\*",
-        r"<strong>\1</strong>",
-        text
-    )
-
-    text = re.sub(
-        r"__(.+?)__",
-        r"<strong>\1</strong>",
-        text
-    )
-
-    # --------------------------------------------------------
-    # 删除 Markdown 图片
-    # --------------------------------------------------------
-
-    text = re.sub(
-        r"!\[[^\]]*\]\([^)]+\)",
-        "",
-        text
-    )
-
-    # --------------------------------------------------------
-    # 普通 Markdown 链接
-    # --------------------------------------------------------
-
-    for placeholder, label, url in links:
-
-        safe_label = escape_html(
-            label
-        )
-
-        safe_url = escape_html(
-            url
-        )
-
-        html_link = (
-            f'<a href="{safe_url}">'
-            f"{safe_label}"
-            f"</a>"
-        )
-
-        text = text.replace(
-            placeholder,
-            html_link
-        )
-
-    return text
-
-
-def markdown_to_wechat_html(markdown_text):
-
-    if not markdown_text:
-
-        return ""
-
-    markdown_text = markdown_text.replace(
-        "\r\n",
-        "\n"
-    )
-
-    markdown_text = markdown_text.replace(
-        "\r",
-        "\n"
-    )
-
-    lines = markdown_text.split(
-        "\n"
-    )
-
-    html_parts = []
-
-    paragraph_lines = []
-
-    def flush_paragraph():
-
-        if not paragraph_lines:
-            return
-
-        paragraph = " ".join(
-            line.strip()
-            for line in paragraph_lines
-            if line.strip()
-        ).strip()
-
-        paragraph_lines.clear()
-
-        if not paragraph:
-            return
-
-        paragraph_html = (
-            convert_inline_markdown(
-                paragraph
-            )
-        )
-
-        html_parts.append(
-            f"<p>{paragraph_html}</p>"
-        )
-
-    for line in lines:
-
-        stripped = line.strip()
-
-        # ----------------------------------------------------
-        # 空行
-        # ----------------------------------------------------
-
-        if not stripped:
-
-            flush_paragraph()
-
-            continue
-
-        # ----------------------------------------------------
-        # 分隔线
-        # ----------------------------------------------------
-
-        if re.fullmatch(
-            r"[-*_]{3,}",
-            stripped
-        ):
-
-            flush_paragraph()
-
-            html_parts.append(
-                "<hr>"
-            )
-
-            continue
-
-        # ----------------------------------------------------
-        # 一级标题
-        # ----------------------------------------------------
-
-        match = re.match(
-            r"^#\s+(.+)$",
-            stripped
-        )
-
-        if match:
-
-            flush_paragraph()
-
-            title = convert_inline_markdown(
-                match.group(1)
-            )
-
-            html_parts.append(
-                f"<h2>{title}</h2>"
-            )
-
-            continue
-
-        # ----------------------------------------------------
-        # 二级 / 三级标题
-        # ----------------------------------------------------
-
-        match = re.match(
-            r"^#{2,6}\s+(.+)$",
-            stripped
-        )
-
-        if match:
-
-            flush_paragraph()
-
-            title = convert_inline_markdown(
-                match.group(1)
-            )
-
-            html_parts.append(
-                f"<h3>{title}</h3>"
-            )
-
-            continue
-
-        # ----------------------------------------------------
-        # 无序列表
-        # ----------------------------------------------------
-
-        if re.match(
-            r"^[-*+]\s+",
-            stripped
-        ):
-
-            flush_paragraph()
-
-            list_items = []
-
-            while True:
-
-                if not lines:
-                    break
-
-                break
-
-            # 单行列表先按普通段落处理，
-            # 避免复杂 Markdown 解析影响文章正文。
-            stripped = re.sub(
-                r"^[-*+]\s+",
-                "",
-                stripped
-            )
-
-            paragraph_lines.append(
-                stripped
-            )
-
-            continue
-
-        # ----------------------------------------------------
-        # 普通段落
-        # ----------------------------------------------------
-
-        paragraph_lines.append(
-            stripped
-        )
-
-    flush_paragraph()
-
-    return "\n".join(
-        html_parts
-    )
-
-
-# ============================================================
-# 清理文章标题
-# ============================================================
-
-def clean_article_title(title):
-
-    if not title:
-
-        return "今日AI资讯"
-
-    title = str(title).strip()
-
-    title = re.sub(
-        r"^#{1,6}\s*",
-        "",
-        title
-    )
-
-    title = title.strip()
-
-    if len(title) > 64:
-
-        title = title[:64].rstrip()
-
-    return title or "今日AI资讯"
-
-
-# ============================================================
-# 读取 article.json
-# ============================================================
-
-def load_article():
-
-    print(
-        "\n========== 读取 AI 生成文章 =========="
-    )
-
-    if not os.path.exists(
-        ARTICLE_JSON_PATH
-    ):
-
-        raise RuntimeError(
-            f"找不到 {ARTICLE_JSON_PATH}。"
-            "请确认 news_fetcher.py 已经成功执行。"
-        )
-
-    with open(
-        ARTICLE_JSON_PATH,
-        "r",
-        encoding="utf-8"
-    ) as file:
-
-        try:
-
-            article_data = json.load(
-                file
-            )
-
-        except json.JSONDecodeError as e:
-
-            raise RuntimeError(
-                f"article.json 不是有效 JSON：{e}"
-            )
-
-    title = clean_article_title(
-        article_data.get(
-            "title",
-            ""
-        )
-    )
-
-    content = article_data.get(
-        "content",
-        ""
-    )
-
-    if not content:
-
-        raise RuntimeError(
-            "article.json 中 content 为空。"
-        )
-
-    print(
-        f"文章标题：{title}"
-    )
-
-    print(
-        f"Markdown 正文长度："
-        f"{len(content)} 字符"
-    )
-
-    return {
-        "title": title,
-        "content": content,
-        "source": article_data.get(
-            "source",
-            ""
-        ),
-        "link": article_data.get(
-            "link",
-            ""
-        ),
-        "pub_date": article_data.get(
-            "pub_date",
-            ""
-        ),
-        "generated_date": article_data.get(
-            "generated_date",
-            ""
-        )
-    }
-
-
-# ============================================================
-# 添加微信公众号草稿
+# 创建微信公众号草稿
 # ============================================================
 
 def add_draft(
@@ -740,49 +897,70 @@ def add_draft(
     thumb_media_id
 ):
 
-    print(
-        "\n========== 开始创建微信公众号草稿 =========="
-    )
+    print("")
+    print("=" * 50)
+    print("开始创建微信公众号草稿")
+    print("=" * 50)
 
-    title = article["title"]
-
-    markdown_content = article["content"]
-
-    html_content = markdown_to_wechat_html(
-        markdown_content
-    )
-
-    if not html_content:
-
-        raise RuntimeError(
-            "Markdown 转换后的 HTML 正文为空。"
-        )
-
-    # --------------------------------------------------------
-    # 微信 draft/add 所需文章对象
-    # --------------------------------------------------------
-
-    article_data = {
-        "title": title,
-        "author": "AI新闻自动化",
-        "digest": (
-            f"每日 AI 新闻自动整理："
-            f"{title}"
-        ),
-        "content": html_content,
-        "content_source_url": article.get(
-            "link",
+    title = str(
+        article.get(
+            "title",
             ""
-        ),
-        "thumb_media_id": thumb_media_id,
-        "show_cover_pic": 1,
-        "need_open_comment": 1,
-        "only_fans_can_comment": 0
-    }
+        )
+    ).strip()
+
+    # 最后保险：
+    # 防止 AI 标题残留 Markdown **
+    title = re.sub(
+        r"\*\*(.*?)\*\*",
+        r"\1",
+        title
+    )
+
+    content = build_wechat_html(
+        article
+    )
+
+    print(
+        f"草稿标题：{title}"
+    )
+
+    print(
+        f"HTML 正文长度：{len(content)} 字符"
+    )
 
     payload = {
         "articles": [
-            article_data
+            {
+                "title": title,
+
+                "author": "web前端漫游记",
+
+                "digest": (
+                    article.get(
+                        "lead",
+                        ""
+                    )[:120]
+                ),
+
+                "content": content,
+
+                "content_source_url": (
+                    article.get(
+                        "original_link",
+                        ""
+                    )
+                ),
+
+                "thumb_media_id":
+                    thumb_media_id,
+
+                "show_cover_pic": 1,
+
+                "need_open_comment": 1,
+
+                "only_fans_can_comment": 0
+            }
         ]
     }
 
@@ -792,71 +970,43 @@ def add_draft(
     ).encode("utf-8")
 
     url = (
-        f"{WECHAT_DRAFT_ADD_URL}"
+        f"{WECHAT_API_BASE}"
+        f"/cgi-bin/draft/add"
         f"?access_token={access_token}"
-    )
-
-    print(
-        f"草稿标题：{title}"
-    )
-
-    print(
-        f"HTML 正文长度："
-        f"{len(html_content)} 字符"
     )
 
     result = http_json_request(
         url,
         method="POST",
         data=data,
-        timeout=60,
         headers={
-            "Content-Type": "application/json; charset=utf-8"
+            "Content-Type":
+                "application/json; charset=utf-8"
         }
     )
-
-    if "errcode" in result:
-
-        raise RuntimeError(
-            f"创建微信公众号草稿失败："
-            f"errcode={result.get('errcode')}, "
-            f"errmsg={result.get('errmsg')}"
-        )
 
     media_id = result.get(
         "media_id"
     )
 
     if not media_id:
-
         raise RuntimeError(
-            "微信公众号草稿接口返回成功，"
-            "但没有返回 media_id。"
+            "草稿创建成功响应中没有 media_id"
         )
 
-    print(
-        "\n========================================"
-    )
-
-    print(
-        "🎉 微信公众号草稿创建成功！"
-    )
-
+    print("")
+    print("=" * 50)
+    print("🎉 微信公众号草稿创建成功！")
     print(
         f"草稿 media_id：{media_id}"
     )
-
     print(
         f"文章标题：{title}"
     )
-
     print(
         "现在可以进入微信公众号后台 → 草稿箱查看。"
     )
-
-    print(
-        "========================================"
-    )
+    print("=" * 50)
 
     return media_id
 
@@ -867,65 +1017,39 @@ def add_draft(
 
 def main():
 
-    print(
-        "\n========================================"
-    )
+    print("")
+    print("=" * 70)
+    print("微信公众号自动化流程开始")
+    print("=" * 70)
 
-    print(
-        "      微信公众号自动草稿系统启动"
-    )
-
-    print(
-        "========================================"
-    )
-
-    # --------------------------------------------------------
-    # 第一步：检查文章
-    # --------------------------------------------------------
-
+    # 1. 读取 AI 生成的文章
     article = load_article()
 
-    # --------------------------------------------------------
-    # 第二步：获取 access_token
-    # --------------------------------------------------------
-
-    access_token = get_access_token()
-
-    # --------------------------------------------------------
-    # 第三步：上传 cover.jpg
-    # --------------------------------------------------------
-
-    thumb_media_id = upload_cover_image(
-        access_token,
-        COVER_IMAGE_PATH
+    print("")
+    print(
+        f"读取文章成功：{article.get('title', '')}"
     )
 
-    # --------------------------------------------------------
-    # 第四步：创建公众号草稿
-    # --------------------------------------------------------
+    # 2. 获取 access_token
+    access_token = get_access_token()
 
+    # 3. 上传封面
+    thumb_media_id = upload_cover_image(
+        access_token
+    )
+
+    # 4. 创建草稿
     add_draft(
         access_token,
         article,
         thumb_media_id
     )
 
-    print(
-        "\n========================================"
-    )
+    print("")
+    print("=" * 70)
+    print("微信公众号自动化流程执行完成！")
+    print("=" * 70)
 
-    print(
-        "微信公众号自动化流程执行完成！"
-    )
-
-    print(
-        "========================================"
-    )
-
-
-# ============================================================
-# 程序入口
-# ============================================================
 
 if __name__ == "__main__":
     main()
