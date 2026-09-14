@@ -28,7 +28,6 @@ RETRY_WAIT_SECONDS = 5
 MAX_NEWS_PER_SOURCE = 20
 
 # RSS 摘要发送给 AI 时的最大长度
-# 防止一次请求 Prompt 过大
 MAX_SCREENING_SUMMARY_CHARS = 800
 MAX_FACT_SUMMARY_CHARS = 2000
 MAX_ARTICLE_SUMMARY_CHARS = 2500
@@ -262,11 +261,11 @@ def fetch_rss(source_name, rss_url):
 def is_retryable_http_status(status_code):
 
     return status_code in {
-        429,  # Too Many Requests
-        500,  # Internal Server Error
-        502,  # Bad Gateway
-        503,  # Service Unavailable
-        504   # Gateway Timeout
+        429,
+        500,
+        502,
+        503,
+        504
     }
 
 
@@ -292,12 +291,6 @@ def call_ai(prompt, max_tokens=1800):
         ],
         "temperature": 0.2,
         "max_tokens": max_tokens,
-
-        # ====================================================
-        # 关键修改：
-        # 关闭 Qwen3 Thinking，避免长文本生成时大量消耗
-        # 推理时间，导致 120 秒请求超时。
-        # ====================================================
         "enable_thinking": False
     }
 
@@ -317,10 +310,6 @@ def call_ai(prompt, max_tokens=1800):
             f"\n正在调用 SiliconFlow，"
             f"第 {attempt}/{MAX_RETRIES} 次..."
         )
-
-        # ----------------------------------------------------
-        # 每一次重试都重新创建 Request
-        # ----------------------------------------------------
 
         request = urllib.request.Request(
             SILICONFLOW_URL,
@@ -347,10 +336,6 @@ def call_ai(prompt, max_tokens=1800):
 
                 response_data = response.read()
 
-            # ------------------------------------------------
-            # JSON 解析
-            # ------------------------------------------------
-
             try:
 
                 result = json.loads(
@@ -362,10 +347,6 @@ def call_ai(prompt, max_tokens=1800):
                 raise RuntimeError(
                     f"SiliconFlow 返回数据不是有效 JSON：{e}"
                 )
-
-            # ------------------------------------------------
-            # 获取模型输出
-            # ------------------------------------------------
 
             choices = result.get(
                 "choices",
@@ -395,10 +376,6 @@ def call_ai(prompt, max_tokens=1800):
             )
 
             return content
-
-        # ----------------------------------------------------
-        # HTTP 错误
-        # ----------------------------------------------------
 
         except urllib.error.HTTPError as e:
 
@@ -436,14 +413,9 @@ def call_ai(prompt, max_tokens=1800):
                     f"服务端信息：{error_body}"
                 )
 
-            # 401 / 403 等认证错误没必要重复请求
             if not is_retryable_http_status(status):
 
                 raise last_error
-
-        # ----------------------------------------------------
-        # 超时
-        # ----------------------------------------------------
 
         except (
             socket.timeout,
@@ -457,10 +429,6 @@ def call_ai(prompt, max_tokens=1800):
                 f"{REQUEST_TIMEOUT} 秒内未完成响应读取"
             )
 
-        # ----------------------------------------------------
-        # 网络连接错误
-        # ----------------------------------------------------
-
         except urllib.error.URLError as e:
 
             last_error = e
@@ -469,10 +437,6 @@ def call_ai(prompt, max_tokens=1800):
                 f"SiliconFlow 网络错误：{e}"
             )
 
-        # ----------------------------------------------------
-        # 其他错误
-        # ----------------------------------------------------
-
         except Exception as e:
 
             last_error = e
@@ -480,10 +444,6 @@ def call_ai(prompt, max_tokens=1800):
             print(
                 f"SiliconFlow 调用失败：{e}"
             )
-
-        # ----------------------------------------------------
-        # 重试
-        # ----------------------------------------------------
 
         if attempt < MAX_RETRIES:
 
@@ -527,11 +487,6 @@ def build_news_context(
             summary_limit
         )
 
-        # ----------------------------------------------------
-        # AI 筛选阶段不需要原文链接
-        # 因为链接不会影响新闻重要性判断
-        # ----------------------------------------------------
-
         item = (
             f"新闻编号：{index}\n"
             f"来源：{news.get('source', '')}\n"
@@ -546,10 +501,6 @@ def build_news_context(
                 f"\n原文链接："
                 f"{news.get('link', '')}"
             )
-
-        # ----------------------------------------------------
-        # 控制整个 Prompt 大小
-        # ----------------------------------------------------
 
         if (
             current_length
@@ -584,14 +535,6 @@ def build_news_context(
 # ============================================================
 
 def ask_ai(news_list):
-
-    # --------------------------------------------------------
-    # 筛选阶段：
-    # 只发送标题、来源、发布时间、摘要
-    # 不发送原文链接
-    #
-    # 这样可以明显减少 Prompt 大小。
-    # --------------------------------------------------------
 
     news_context = build_news_context(
         news_list,
@@ -660,21 +603,12 @@ def ask_ai(news_list):
 {news_context}
 """
 
-    # --------------------------------------------------------
-    # 筛选结果实际上不需要 1800 tokens
-    # JSON 很短，降低最大输出可以减少响应压力
-    # --------------------------------------------------------
-
     result = call_ai(
         prompt,
         max_tokens=1200
     )
 
     result = result.strip()
-
-    # --------------------------------------------------------
-    # 清理可能出现的 Markdown
-    # --------------------------------------------------------
 
     result = re.sub(
         r"^```json\s*",
@@ -696,10 +630,6 @@ def ask_ai(news_list):
     )
 
     result = result.strip()
-
-    # --------------------------------------------------------
-    # 尝试解析 JSON
-    # --------------------------------------------------------
 
     try:
 
@@ -760,10 +690,6 @@ def filter_selected_news(
         "daily newsletter",
     ]
 
-    # --------------------------------------------------------
-    # 基础字段检查
-    # --------------------------------------------------------
-
     for item in selected_news:
 
         try:
@@ -814,10 +740,6 @@ def filter_selected_news(
 
         title_lower = title.lower()
 
-        # ----------------------------------------------------
-        # AI 标记
-        # ----------------------------------------------------
-
         if is_ai is not True:
 
             print(
@@ -826,10 +748,6 @@ def filter_selected_news(
             )
 
             continue
-
-        # ----------------------------------------------------
-        # 重要性
-        # ----------------------------------------------------
 
         if is_major is not True:
 
@@ -840,10 +758,6 @@ def filter_selected_news(
 
             continue
 
-        # ----------------------------------------------------
-        # 分数
-        # ----------------------------------------------------
-
         if score < 7:
 
             print(
@@ -852,10 +766,6 @@ def filter_selected_news(
             )
 
             continue
-
-        # ----------------------------------------------------
-        # 综合新闻过滤
-        # ----------------------------------------------------
 
         matched_roundup = False
 
@@ -877,20 +787,12 @@ def filter_selected_news(
 
         valid_news.append(item)
 
-    # --------------------------------------------------------
-    # 按分数排序
-    # --------------------------------------------------------
-
     valid_news.sort(
         key=lambda x: int(
             x.get("score", 0)
         ),
         reverse=True
     )
-
-    # --------------------------------------------------------
-    # 根据 duplicate_group 去重
-    # --------------------------------------------------------
 
     unique_news = []
 
@@ -928,10 +830,6 @@ def filter_selected_news(
         )
 
         unique_news.append(item)
-
-    # --------------------------------------------------------
-    # 最终只保留 1 条最高优先级新闻
-    # --------------------------------------------------------
 
     unique_news = unique_news[:1]
 
@@ -1103,11 +1001,6 @@ RSS摘要：
 {context}
 """
 
-    # --------------------------------------------------------
-    # 事实提取只处理 1 条新闻
-    # 1200 tokens 已经足够
-    # --------------------------------------------------------
-
     result = call_ai(
         prompt,
         max_tokens=1200
@@ -1198,35 +1091,30 @@ def clean_generated_text(text):
     if not text:
         return ""
 
-    # 删除 Markdown 链接
     text = re.sub(
         r"\[([^\]]+)\]\((https?://[^)]+)\)",
         r"\1",
         text
     )
 
-    # 删除裸 URL
     text = re.sub(
         r"https?://\S+",
         "",
         text
     )
 
-    # 删除来源信息
     text = re.sub(
         r"来源\s*[：:]\s*[^\n]+",
         "",
         text
     )
 
-    # 删除原文信息
     text = re.sub(
         r"原文\s*[：:]\s*[^\n]+",
         "",
         text
     )
 
-    # 压缩多余空行
     text = re.sub(
         r"\n{3,}",
         "\n\n",
@@ -1258,12 +1146,6 @@ def generate_article(
             "暂时没有筛选到适合发布的 AI 主题。"
         )
 
-    # --------------------------------------------------------
-    # 当前方案：
-    # 每天只围绕 1 个最重要的 AI 新闻
-    # 写 1 篇完整文章
-    # --------------------------------------------------------
-
     selected = selected_news[0]
 
     index = int(
@@ -1271,10 +1153,6 @@ def generate_article(
     )
 
     news = all_news[index - 1]
-
-    # --------------------------------------------------------
-    # 找到对应的事实提取结果
-    # --------------------------------------------------------
 
     article_data = {}
 
@@ -1331,10 +1209,6 @@ def generate_article(
     )
 
     today = get_beijing_date()
-
-    # --------------------------------------------------------
-    # 给 AI 的写作资料
-    # --------------------------------------------------------
 
     summary = truncate_text(
         news.get("summary", ""),
@@ -1502,22 +1376,12 @@ RSS摘要：
 现在开始写。
 """
 
-    # --------------------------------------------------------
-    # 文章目标 1500～2200 字
-    # 2800 tokens 已经给出足够空间
-    # 同时减少模型无意义的超长生成
-    # --------------------------------------------------------
-
     result = call_ai(
         prompt,
         max_tokens=2800
     )
 
     result = result.strip()
-
-    # --------------------------------------------------------
-    # 清理可能出现的 Markdown 代码块
-    # --------------------------------------------------------
 
     result = re.sub(
         r"^```(?:markdown|text)?\s*",
@@ -1534,10 +1398,6 @@ RSS摘要：
 
     result = result.strip()
 
-    # --------------------------------------------------------
-    # 清理 AI 自己可能生成的来源/链接
-    # --------------------------------------------------------
-
     result = clean_generated_text(
         result
     )
@@ -1545,12 +1405,6 @@ RSS摘要：
     if not result:
 
         result = news["title"]
-
-    # --------------------------------------------------------
-    # Python 自动追加来源和原文链接
-    #
-    # 防止 AI 修改、遗漏或编造链接
-    # --------------------------------------------------------
 
     article = (
         f"{result}\n\n"
@@ -1560,6 +1414,131 @@ RSS摘要：
     )
 
     return article.strip()
+
+
+# ============================================================
+# 从文章正文中提取标题
+# ============================================================
+
+def extract_article_title(article):
+
+    if not article:
+        return "今日AI资讯"
+
+    lines = [
+        line.strip()
+        for line in article.splitlines()
+        if line.strip()
+    ]
+
+    if not lines:
+        return "今日AI资讯"
+
+    title = lines[0]
+
+    # 去掉可能存在的 Markdown 标题符号
+    title = re.sub(
+        r"^#{1,6}\s*",
+        "",
+        title
+    ).strip()
+
+    # 微信标题长度控制
+    if len(title) > 64:
+        title = title[:64].rstrip()
+
+    return title or "今日AI资讯"
+
+
+# ============================================================
+# 保存 article.json
+# ============================================================
+
+def save_article_json(
+    article,
+    selected_news,
+    all_news
+):
+
+    if not article:
+        raise RuntimeError(
+            "生成的文章为空，无法保存 article.json。"
+        )
+
+    article_title = extract_article_title(
+        article
+    )
+
+    source = ""
+    link = ""
+    pub_date = ""
+
+    if selected_news:
+
+        index = int(
+            selected_news[0]["index"]
+        )
+
+        news = all_news[index - 1]
+
+        source = news.get(
+            "source",
+            ""
+        )
+
+        link = news.get(
+            "link",
+            ""
+        )
+
+        pub_date = news.get(
+            "pub_date",
+            ""
+        )
+
+    article_data = {
+        "title": article_title,
+        "content": article,
+        "source": source,
+        "link": link,
+        "pub_date": pub_date,
+        "generated_date": get_beijing_date()
+    }
+
+    output_path = "article.json"
+
+    with open(
+        output_path,
+        "w",
+        encoding="utf-8"
+    ) as file:
+
+        json.dump(
+            article_data,
+            file,
+            ensure_ascii=False,
+            indent=2
+        )
+
+    print(
+        "\n========================================"
+    )
+
+    print(
+        "article.json 已生成"
+    )
+
+    print(
+        f"文章标题：{article_title}"
+    )
+
+    print(
+        f"文章正文长度：{len(article)} 字符"
+    )
+
+    print(
+        "========================================"
+    )
 
 
 # ============================================================
@@ -1700,12 +1679,32 @@ def main():
 
     print(article)
 
+    # --------------------------------------------------------
+    # 第六步：保存 article.json
+    #
+    # 供 wechat_test.py 读取
+    # --------------------------------------------------------
+
+    save_article_json(
+        article,
+        selected_news,
+        all_news
+    )
+
     print(
         "\n========================================"
     )
 
     print(
         "\nAI 新闻自动化流程执行完成"
+    )
+
+    print(
+        "\n下一步将由 wechat_test.py"
+    )
+
+    print(
+        "读取 article.json 并提交微信公众号草稿箱。"
     )
 
     print(
