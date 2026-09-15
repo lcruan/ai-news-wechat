@@ -1174,7 +1174,7 @@ def add_draft(
             {
                 "title": title,
 
-                "author": "web前端漫游记",
+                "author": "web前端开发之旅",
 
                 "digest": (
                     article.get(
