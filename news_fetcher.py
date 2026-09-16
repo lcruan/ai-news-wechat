@@ -2,10 +2,12 @@ import os
 import re
 import json
 import time
-import socket
+import html
 import urllib.request
 import urllib.error
+import urllib.parse
 import xml.etree.ElementTree as ET
+from html.parser import HTMLParser
 from datetime import datetime, timezone, timedelta
 
 
@@ -16,67 +18,80 @@ from datetime import datetime, timezone, timedelta
 SILICONFLOW_API_KEY = os.environ.get("SILICONFLOW_API_KEY")
 
 SILICONFLOW_URL = "https://api.siliconflow.cn/v1/chat/completions"
-
 MODEL = "Qwen/Qwen3-8B"
 
-# 按之前已经验证成功的配置保留
 REQUEST_TIMEOUT = 120
 MAX_RETRIES = 3
 RETRY_WAIT_SECONDS = 5
 
-MAX_NEWS_PER_SOURCE = 20
+ARTICLE_FILE = "article.json"
+COVER_FILE = "cover.jpg"
 
-MAX_SCREENING_SUMMARY_CHARS = 800
-MAX_FACT_SUMMARY_CHARS = 2000
-MAX_ARTICLE_SUMMARY_CHARS = 2500
+# Medium 官方 Topic RSS
+MEDIUM_FEEDS = [
+    ("Medium Frontend Development", "https://medium.com/feed/tag/frontend-development"),
+    ("Medium Web Development", "https://medium.com/feed/tag/web-development"),
+    ("Medium Artificial Intelligence", "https://medium.com/feed/tag/artificial-intelligence"),
+]
+
+# DEV.to 官方 API
+DEV_API_BASE = "https://dev.to/api"
+
+# DEV.to 重点关注的标签
+DEV_TAGS = [
+    "frontend",
+    "webdev",
+    "javascript",
+    "react",
+    "vue",
+    "ai",
+]
+
+# 每个来源最多读取多少篇
+MAX_ITEMS_PER_SOURCE = 12
+
+# 最终交给 AI 筛选的候选文章数量
+MAX_CANDIDATES_FOR_AI = 20
+
+# 单篇正文最大字符数
+MAX_ARTICLE_CHARS = 18000
+
+# 选题上下文最大字符数
 MAX_SCREENING_CONTEXT_CHARS = 30000
 
-# 最终最多生成多少篇候选
-MAX_CANDIDATES = 5
+# 最终文章每个 section 最大字符
+MAX_SECTION_CHARS = 1800
 
 
 # ============================================================
-# RSS 信息源
-# ============================================================
-
-RSS_SOURCES = {
-    "Ars Technica": "https://feeds.arstechnica.com/arstechnica/technology-lab",
-    "MIT Technology Review": "https://www.technologyreview.com/feed/",
-}
-
-
-# ============================================================
-# 内容类型
-# ============================================================
-
-CONTENT_TYPES = {
-    "ai_news": "AI新闻",
-    "ai_technology": "AI技术",
-    "ai_application": "AI应用",
-    "ai_frontend": "AI × 前端",
-}
-
-
-# ============================================================
-# 基础文本处理
+# 文本清理
 # ============================================================
 
 def clean_text(text):
     if not text:
         return ""
 
-    text = re.sub(r"<[^>]+>", " ", text)
-
-    text = text.replace("&nbsp;", " ")
-    text = text.replace("&amp;", "&")
-    text = text.replace("&lt;", "<")
-    text = text.replace("&gt;", ">")
-    text = text.replace("&quot;", '"')
-    text = text.replace("&#39;", "'")
-
+    text = html.unescape(text)
     text = re.sub(r"\s+", " ", text)
-
     return text.strip()
+
+
+def strip_html(text):
+    if not text:
+        return ""
+
+    text = re.sub(r"(?is)<script.*?>.*?</script>", " ", text)
+    text = re.sub(r"(?is)<style.*?>.*?</style>", " ", text)
+    text = re.sub(r"(?is)<[^>]+>", " ", text)
+
+    return clean_text(text)
+
+
+def normalize_url(url):
+    if not url:
+        return ""
+
+    return html.unescape(url).strip()
 
 
 def truncate_text(text, max_chars):
@@ -85,253 +100,811 @@ def truncate_text(text, max_chars):
     if len(text) <= max_chars:
         return text
 
-    return text[:max_chars] + "..."
-
-
-def get_beijing_date():
-    beijing_tz = timezone(timedelta(hours=8))
-
-    return datetime.now(
-        beijing_tz
-    ).strftime("%Y-%m-%d")
+    return text[:max_chars] + "\n[正文已截断，仅用于模型处理]"
 
 
 # ============================================================
-# RSS 抓取
+# HTTP
 # ============================================================
 
-def fetch_rss(source_name, url):
+def http_get(url, headers=None, timeout=REQUEST_TIMEOUT):
+    request_headers = {
+        "User-Agent": (
+            "Mozilla/5.0 "
+            "(Macintosh; Intel Mac OS X 10_15_7) "
+            "AppleWebKit/537.36 "
+            "(KHTML, like Gecko) "
+            "Chrome/150.0 Safari/537.36"
+        )
+    }
 
-    print("")
-    print("=" * 60)
-    print(f"开始抓取 RSS：{source_name}")
-    print(url)
-    print("=" * 60)
+    if headers:
+        request_headers.update(headers)
 
     request = urllib.request.Request(
         url,
-        headers={
-            "User-Agent": "Mozilla/5.0 AI-News-Bot/1.0"
-        }
+        headers=request_headers,
+        method="GET"
     )
 
+    with urllib.request.urlopen(
+        request,
+        timeout=timeout
+    ) as response:
+        return response.read()
+
+
+def http_json_get(url, headers=None, timeout=REQUEST_TIMEOUT):
+    data = http_get(
+        url,
+        headers=headers,
+        timeout=timeout
+    )
+
+    return json.loads(
+        data.decode("utf-8", errors="replace")
+    )
+
+
+# ============================================================
+# HTML 内容解析
+# ============================================================
+
+class ArticleHTMLParser(HTMLParser):
+    """
+    不依赖第三方库的 HTML 解析器。
+
+    目标：
+    1. 提取正文文字
+    2. 提取图片
+    3. 忽略 script/style/nav/footer 等明显非正文区域
+    """
+
+    IGNORE_TAGS = {
+        "script",
+        "style",
+        "noscript",
+        "svg",
+        "nav",
+        "footer",
+        "form",
+        "button",
+    }
+
+    BLOCK_TAGS = {
+        "p",
+        "div",
+        "section",
+        "article",
+        "h1",
+        "h2",
+        "h3",
+        "h4",
+        "h5",
+        "h6",
+        "li",
+        "blockquote",
+        "pre",
+        "br",
+        "hr",
+    }
+
+    def __init__(self):
+        super().__init__(
+            convert_charrefs=True
+        )
+
+        self.text_parts = []
+        self.images = []
+
+        self.ignore_depth = 0
+        self.current_tag_stack = []
+
+    def handle_starttag(self, tag, attrs):
+        tag = tag.lower()
+
+        attrs_dict = dict(attrs)
+
+        if tag in self.IGNORE_TAGS:
+            self.ignore_depth += 1
+            return
+
+        if self.ignore_depth > 0:
+            return
+
+        self.current_tag_stack.append(tag)
+
+        if tag == "img":
+            image_url = (
+                attrs_dict.get("src")
+                or attrs_dict.get("data-src")
+                or attrs_dict.get("data-original")
+                or ""
+            )
+
+            if not image_url:
+                srcset = attrs_dict.get("srcset", "")
+
+                if srcset:
+                    first = srcset.split(",")[0].strip()
+
+                    if first:
+                        image_url = first.split(" ")[0]
+
+            if image_url:
+                self.images.append(
+                    normalize_url(image_url)
+                )
+
+        if tag in self.BLOCK_TAGS:
+            self.text_parts.append("\n")
+
+    def handle_startendtag(self, tag, attrs):
+        self.handle_starttag(tag, attrs)
+
+        if tag.lower() in self.BLOCK_TAGS:
+            self.text_parts.append("\n")
+
+    def handle_endtag(self, tag):
+        tag = tag.lower()
+
+        if tag in self.IGNORE_TAGS:
+            if self.ignore_depth > 0:
+                self.ignore_depth -= 1
+            return
+
+        if self.ignore_depth > 0:
+            return
+
+        if self.current_tag_stack:
+            try:
+                index = len(self.current_tag_stack) - 1 - self.current_tag_stack[::-1].index(tag)
+                self.current_tag_stack.pop(index)
+            except ValueError:
+                pass
+
+        if tag in self.BLOCK_TAGS:
+            self.text_parts.append("\n")
+
+    def handle_data(self, data):
+        if self.ignore_depth > 0:
+            return
+
+        if not data:
+            return
+
+        text = clean_text(data)
+
+        if text:
+            self.text_parts.append(text)
+
+
+def parse_html_content(content):
+    parser = ArticleHTMLParser()
+
     try:
-
-        with urllib.request.urlopen(
-            request,
-            timeout=REQUEST_TIMEOUT
-        ) as response:
-
-            data = response.read()
-
-        print(
-            f"{source_name} RSS 获取成功："
-            f"{len(data)} bytes"
-        )
-
+        parser.feed(content or "")
+        parser.close()
     except Exception as e:
+        print(f"HTML 解析出现异常：{e}")
 
-        print(
-            f"{source_name} RSS 获取失败：{e}"
-        )
+    text = "\n".join(parser.text_parts)
 
+    text = re.sub(
+        r"\n{3,}",
+        "\n\n",
+        text
+    )
+
+    text = re.sub(
+        r"[ \t]+\n",
+        "\n",
+        text
+    )
+
+    text = re.sub(
+        r"\n[ \t]+",
+        "\n",
+        text
+    )
+
+    text = text.strip()
+
+    # 图片去重
+    images = []
+
+    for image_url in parser.images:
+        if not image_url:
+            continue
+
+        if image_url.startswith("//"):
+            image_url = "https:" + image_url
+
+        if image_url not in images:
+            images.append(image_url)
+
+    return {
+        "text": text,
+        "images": images,
+    }
+
+
+# ============================================================
+# Medium RSS
+# ============================================================
+
+def get_xml_text(node, tag_name):
+    child = node.find(tag_name)
+
+    if child is None:
+        return ""
+
+    return child.text or ""
+
+
+def get_atom_link(entry):
+    namespace = "{http://www.w3.org/2005/Atom}"
+
+    for link_node in entry.findall(namespace + "link"):
+        href = link_node.attrib.get("href", "")
+
+        if href:
+            return href
+
+    return ""
+
+
+def fetch_medium_feed(source_name, feed_url):
+    print()
+    print("=" * 70)
+    print(f"抓取 Medium：{source_name}")
+    print(feed_url)
+    print("=" * 70)
+
+    try:
+        xml_data = http_get(feed_url)
+        root = ET.fromstring(xml_data)
+    except Exception as e:
+        print(f"Medium RSS 抓取失败：{e}")
         return []
 
-    try:
+    namespace = {
+        "atom": "http://www.w3.org/2005/Atom",
+        "content": "http://purl.org/rss/1.0/modules/content/",
+        "dc": "http://purl.org/dc/elements/1.1/",
+    }
 
-        root = ET.fromstring(data)
+    articles = []
 
-    except Exception as e:
+    # Medium 通常使用 Atom <entry>
+    entries = root.findall("atom:entry", namespace)
 
-        print(
-            f"{source_name} RSS XML 解析失败：{e}"
+    # 兼容普通 RSS
+    if not entries:
+        entries = root.findall(".//item")
+
+    for entry in entries[:MAX_ITEMS_PER_SOURCE]:
+
+        title = ""
+        link = ""
+        pub_date = ""
+        summary = ""
+        content_html = ""
+
+        # Atom
+        title_node = entry.find("atom:title", namespace)
+
+        if title_node is not None:
+            title = title_node.text or ""
+
+        link = get_atom_link(entry)
+
+        published_node = entry.find(
+            "atom:published",
+            namespace
         )
 
-        return []
-
-    news_list = []
-
-    # ========================================================
-    # RSS 2.0
-    # ========================================================
-
-    items = root.findall(".//item")
-
-    for item in items[:MAX_NEWS_PER_SOURCE]:
-
-        title = item.findtext(
-            "title",
-            ""
+        updated_node = entry.find(
+            "atom:updated",
+            namespace
         )
 
-        summary = item.findtext(
-            "description",
-            ""
+        if published_node is not None:
+            pub_date = published_node.text or ""
+        elif updated_node is not None:
+            pub_date = updated_node.text or ""
+
+        summary_node = entry.find(
+            "atom:summary",
+            namespace
         )
 
-        link = item.findtext(
-            "link",
-            ""
+        if summary_node is not None:
+            summary = summary_node.text or ""
+
+        content_node = entry.find(
+            "atom:content",
+            namespace
         )
 
-        pub_date = item.findtext(
-            "pubDate",
-            ""
-        )
+        if content_node is not None:
+            content_html = "".join(
+                content_node.itertext()
+            )
+
+            # 如果 content 节点本身带 XHTML 内容，
+            # itertext 只能得到文字，因此重新取原始序列化内容
+            try:
+                content_html = ET.tostring(
+                    content_node,
+                    encoding="unicode"
+                )
+            except Exception:
+                pass
+
+        # 普通 RSS 兼容
+        if not title:
+            title = get_xml_text(entry, "title")
+
+        if not link:
+            link = get_xml_text(entry, "link")
+
+        if not pub_date:
+            pub_date = get_xml_text(
+                entry,
+                "pubDate"
+            )
+
+        if not summary:
+            summary = get_xml_text(
+                entry,
+                "description"
+            )
+
+        if not content_html:
+            content_html = get_xml_text(
+                entry,
+                "{http://purl.org/rss/1.0/modules/content/}encoded"
+            )
 
         title = clean_text(title)
-        summary = clean_text(summary)
-        link = clean_text(link)
-        pub_date = clean_text(pub_date)
+        link = normalize_url(link)
+        summary_text = strip_html(summary)
+
+        # Medium RSS 的 content 如果是 HTML，
+        # 直接解析 HTML。
+        parsed = parse_html_content(
+            content_html
+        )
+
+        body_text = parsed["text"]
+        images = parsed["images"]
+
+        # 如果正文解析失败，至少保留 summary
+        if len(body_text) < 300:
+            body_text = summary_text
+
+        # Medium 付费墙文章通常不会提供完整 RSS 正文。
+        # 正文过短直接跳过，不尝试绕过付费墙。
+        if len(body_text) < 500:
+            print(
+                f"跳过 Medium 文章：正文过短 / 可能是付费墙"
+            )
+            print(f"标题：{title}")
+            continue
 
         if not title or not link:
             continue
 
-        news_list.append({
-            "source": source_name,
+        articles.append({
+            "source": "Medium",
+            "source_name": source_name,
             "title": title,
-            "summary": truncate_text(
-                summary,
-                MAX_FACT_SUMMARY_CHARS
-            ),
+            "summary": summary_text,
             "link": link,
             "pub_date": pub_date,
+            "body": truncate_text(
+                body_text,
+                MAX_ARTICLE_CHARS
+            ),
+            "images": images[:10],
         })
 
-    # ========================================================
-    # Atom
-    # ========================================================
+    print(
+        f"Medium {source_name} 获取到 {len(articles)} 篇可用文章"
+    )
 
-    if not news_list:
+    return articles
 
-        atom_entries = root.findall(
-            ".//{http://www.w3.org/2005/Atom}entry"
+
+# ============================================================
+# DEV.to
+# ============================================================
+
+def fetch_dev_articles():
+    print()
+    print("=" * 70)
+    print("抓取 DEV.to")
+    print("=" * 70)
+
+    articles = []
+    seen_ids = set()
+
+    for tag in DEV_TAGS:
+
+        url = (
+            f"{DEV_API_BASE}/articles"
+            f"?tag={urllib.parse.quote(tag)}"
+            f"&per_page={MAX_ITEMS_PER_SOURCE}"
         )
 
-        for entry in atom_entries[
-            :MAX_NEWS_PER_SOURCE
-        ]:
+        print()
+        print(f"DEV.to 标签：{tag}")
 
-            title_node = entry.find(
-                "{http://www.w3.org/2005/Atom}title"
+        try:
+            data = http_json_get(
+                url,
+                headers={
+                    "Accept": "application/json"
+                }
             )
-
-            summary_node = entry.find(
-                "{http://www.w3.org/2005/Atom}summary"
+        except Exception as e:
+            print(
+                f"DEV.to 标签 {tag} 获取失败：{e}"
             )
+            continue
 
-            published_node = entry.find(
-                "{http://www.w3.org/2005/Atom}published"
-            )
+        if not isinstance(data, list):
+            continue
 
-            updated_node = entry.find(
-                "{http://www.w3.org/2005/Atom}updated"
-            )
+        for item in data:
 
-            link = ""
+            article_id = item.get("id")
 
-            for link_node in entry.findall(
-                "{http://www.w3.org/2005/Atom}link"
-            ):
-
-                href = link_node.attrib.get(
-                    "href",
-                    ""
-                )
-
-                rel = link_node.attrib.get(
-                    "rel",
-                    ""
-                )
-
-                if href and (
-                    not rel
-                    or rel == "alternate"
-                ):
-
-                    link = href
-
-                    break
-
-            title = clean_text(
-                title_node.text
-                if title_node is not None
-                else ""
-            )
-
-            summary = clean_text(
-                summary_node.text
-                if summary_node is not None
-                else ""
-            )
-
-            pub_date = ""
-
-            if published_node is not None:
-
-                pub_date = clean_text(
-                    published_node.text
-                )
-
-            if not pub_date and updated_node is not None:
-
-                pub_date = clean_text(
-                    updated_node.text
-                )
-
-            if not title or not link:
+            if not article_id:
                 continue
 
-            news_list.append({
-                "source": source_name,
+            if article_id in seen_ids:
+                continue
+
+            seen_ids.add(article_id)
+
+            title = clean_text(
+                item.get("title", "")
+            )
+
+            description = clean_text(
+                item.get("description", "")
+            )
+
+            url_value = (
+                item.get("url")
+                or ""
+            )
+
+            published_at = (
+                item.get("published_at")
+                or item.get("published_timestamp")
+                or ""
+            )
+
+            cover_image = (
+                item.get("cover_image")
+                or item.get("social_image")
+                or ""
+            )
+
+            tags = item.get("tag_list", [])
+
+            if isinstance(tags, str):
+                tags = [
+                    x.strip()
+                    for x in tags.split(",")
+                    if x.strip()
+                ]
+
+            if not title or not url_value:
+                continue
+
+            articles.append({
+                "source": "DEV.to",
+                "source_name": "DEV.to",
+                "id": article_id,
                 "title": title,
-                "summary": truncate_text(
-                    summary,
-                    MAX_FACT_SUMMARY_CHARS
+                "summary": description,
+                "link": normalize_url(url_value),
+                "pub_date": published_at,
+                "cover_image": normalize_url(
+                    cover_image
                 ),
-                "link": link,
-                "pub_date": pub_date,
+                "tags": tags,
             })
 
     print(
-        f"{source_name} 共抓取 "
-        f"{len(news_list)} 条内容"
+        f"DEV.to 初步获取 {len(articles)} 篇文章"
     )
 
-    return news_list
+    # --------------------------------------------------------
+    # 获取每篇文章的完整正文
+    # --------------------------------------------------------
+
+    completed = []
+
+    # 最多处理前 30 篇，避免一次运行请求太多
+    for index, article in enumerate(
+        articles[:30],
+        start=1
+    ):
+
+        article_id = article.get("id")
+
+        print(
+            f"\n读取 DEV.to 正文 "
+            f"{index}/{min(len(articles), 30)}："
+            f"{article['title']}"
+        )
+
+        detail_url = (
+            f"{DEV_API_BASE}/articles/{article_id}"
+        )
+
+        try:
+            detail = http_json_get(
+                detail_url,
+                headers={
+                    "Accept": "application/json"
+                }
+            )
+        except Exception as e:
+            print(
+                f"DEV.to 正文获取失败：{e}"
+            )
+            continue
+
+        body_html = (
+            detail.get("body_html")
+            or ""
+        )
+
+        body_markdown = (
+            detail.get("body_markdown")
+            or ""
+        )
+
+        if body_html:
+            parsed = parse_html_content(
+                body_html
+            )
+
+            body_text = parsed["text"]
+            images = parsed["images"]
+
+        else:
+            body_text = clean_text(
+                body_markdown
+            )
+            images = []
+
+        if not body_text:
+            continue
+
+        if len(body_text) < 500:
+            print("正文过短，跳过")
+            continue
+
+        if not images:
+            cover_image = (
+                detail.get("cover_image")
+                or detail.get("social_image")
+                or article.get("cover_image")
+                or ""
+            )
+
+            if cover_image:
+                images = [
+                    normalize_url(cover_image)
+                ]
+
+        completed.append({
+            "source": "DEV.to",
+            "source_name": "DEV.to",
+            "title": clean_text(
+                detail.get(
+                    "title",
+                    article["title"]
+                )
+            ),
+            "summary": clean_text(
+                detail.get(
+                    "description",
+                    article["summary"]
+                )
+            ),
+            "link": normalize_url(
+                detail.get(
+                    "url",
+                    article["link"]
+                )
+            ),
+            "pub_date": (
+                detail.get("published_at")
+                or article["pub_date"]
+            ),
+            "body": truncate_text(
+                body_text,
+                MAX_ARTICLE_CHARS
+            ),
+            "images": images[:10],
+            "tags": detail.get(
+                "tag_list",
+                article.get("tags", [])
+            ),
+        })
+
+    print(
+        f"DEV.to 获取到 {len(completed)} 篇完整文章"
+    )
+
+    return completed
 
 
 # ============================================================
-# SiliconFlow HTTP
+# 文章关键词过滤
 # ============================================================
 
-def is_retryable_http_status(status):
+POSITIVE_KEYWORDS = [
+    "frontend",
+    "front-end",
+    "web",
+    "javascript",
+    "typescript",
+    "react",
+    "vue",
+    "angular",
+    "css",
+    "html",
+    "browser",
+    "web development",
+    "ui",
+    "ux",
+    "next.js",
+    "nuxt",
+    "vite",
+    "webpack",
+    "performance",
+    "accessibility",
+    "ai",
+    "artificial intelligence",
+    "llm",
+    "large language model",
+    "generative ai",
+    "copilot",
+    "agent",
+    "ai coding",
+    "coding agent",
+]
 
-    return status in {
-        429,
-        500,
-        502,
-        503,
-        504
-    }
+NEGATIVE_KEYWORDS = [
+    "job",
+    "jobs",
+    "hiring",
+    "recruit",
+    "recruitment",
+    "giveaway",
+    "sponsor",
+    "sponsored",
+    "newsletter",
+    "roundup",
+    "weekly roundup",
+    "monthly roundup",
+    "introducing myself",
+    "looking for work",
+    "crypto",
+    "cryptocurrency",
+    "bitcoin",
+    "casino",
+    "betting",
+]
 
 
-def call_ai(messages):
+def article_keyword_filter(article):
+    text = " ".join([
+        article.get("title", ""),
+        article.get("summary", ""),
+        " ".join(
+            article.get("tags", [])
+            if isinstance(
+                article.get("tags", []),
+                list
+            )
+            else []
+        ),
+    ]).lower()
+
+    positive_score = 0
+
+    for keyword in POSITIVE_KEYWORDS:
+        if keyword in text:
+            positive_score += 1
+
+    negative_score = 0
+
+    for keyword in NEGATIVE_KEYWORDS:
+        if keyword in text:
+            negative_score += 1
+
+    if negative_score > 0:
+        return False
+
+    if positive_score <= 0:
+        return False
+
+    return True
+
+
+def filter_articles(articles):
+    result = []
+    seen_links = set()
+
+    for article in articles:
+
+        link = article.get("link", "")
+
+        if not link:
+            continue
+
+        if link in seen_links:
+            continue
+
+        seen_links.add(link)
+
+        if not article_keyword_filter(article):
+            continue
+
+        body = article.get("body", "")
+
+        if len(body) < 500:
+            continue
+
+        result.append(article)
+
+    # 优先较新的文章
+    result.sort(
+        key=lambda x: x.get(
+            "pub_date",
+            ""
+        ),
+        reverse=True
+    )
+
+    return result
+
+
+# ============================================================
+# SiliconFlow
+# ============================================================
+
+def call_ai(prompt, max_tokens=1800):
 
     if not SILICONFLOW_API_KEY:
-
         raise RuntimeError(
-            "没有找到 SILICONFLOW_API_KEY 环境变量"
+            "没有找到 SILICONFLOW_API_KEY，请检查 GitHub Secrets。"
         )
 
     payload = {
         "model": MODEL,
-        "messages": messages,
+        "messages": [
+            {
+                "role": "user",
+                "content": prompt
+            }
+        ],
         "temperature": 0.2,
-        "enable_thinking": False
+        "max_tokens": max_tokens,
+        "enable_thinking": False,
     }
 
-    body = json.dumps(
+    data = json.dumps(
         payload,
         ensure_ascii=False
     ).encode("utf-8")
@@ -343,31 +916,25 @@ def call_ai(messages):
         MAX_RETRIES + 1
     ):
 
-        print("")
-
         print(
-            f"正在调用 SiliconFlow，"
+            f"\n正在调用 SiliconFlow，"
             f"第 {attempt}/{MAX_RETRIES} 次..."
         )
 
+        # 每一次重试重新创建 Request
         request = urllib.request.Request(
             SILICONFLOW_URL,
-            data=body,
+            data=data,
             headers={
-                "Authorization":
-                    f"Bearer {SILICONFLOW_API_KEY}",
-
-                "Content-Type":
-                    "application/json",
-
-                "User-Agent":
-                    "AI-News-WeChat/1.0"
+                "Content-Type": "application/json",
+                "Authorization": (
+                    f"Bearer {SILICONFLOW_API_KEY}"
+                )
             },
             method="POST"
         )
 
         try:
-
             with urllib.request.urlopen(
                 request,
                 timeout=REQUEST_TIMEOUT
@@ -377,87 +944,38 @@ def call_ai(messages):
 
             result = json.loads(
                 response_data.decode(
-                    "utf-8"
+                    "utf-8",
+                    errors="replace"
                 )
             )
-
-            if "error" in result:
-
-                raise RuntimeError(
-                    "SiliconFlow API 返回错误："
-                    f"{result['error']}"
-                )
-
-            choices = result.get(
-                "choices",
-                []
-            )
-
-            if not choices:
-
-                raise RuntimeError(
-                    "SiliconFlow 返回结果中没有 choices"
-                )
 
             content = (
-                choices[0]
+                result
+                .get("choices", [{}])[0]
                 .get("message", {})
                 .get("content", "")
             )
 
             if not content:
-
                 raise RuntimeError(
                     "SiliconFlow 返回内容为空"
                 )
 
-            print(
-                "SiliconFlow 调用成功"
-            )
+            print("SiliconFlow 调用成功")
 
-            return content.strip()
-
-        except urllib.error.HTTPError as e:
-
-            last_error = e
-
-            try:
-
-                error_body = e.read().decode(
-                    "utf-8",
-                    errors="ignore"
-                )
-
-            except Exception:
-
-                error_body = ""
-
-            print(
-                "SiliconFlow HTTP 错误："
-                f"{e.code} {error_body}"
-            )
-
-            if not is_retryable_http_status(
-                e.code
-            ):
-
-                raise RuntimeError(
-                    "SiliconFlow 请求失败："
-                    f"HTTP {e.code} "
-                    f"{error_body}"
-                )
+            return content
 
         except (
+            urllib.error.HTTPError,
             urllib.error.URLError,
             TimeoutError,
-            socket.timeout
+            socket_timeout_error
         ) as e:
 
             last_error = e
 
             print(
-                "SiliconFlow 请求超时或网络错误："
-                f"{e}"
+                f"SiliconFlow 请求失败：{e}"
             )
 
         except Exception as e:
@@ -465,7 +983,7 @@ def call_ai(messages):
             last_error = e
 
             print(
-                f"SiliconFlow 请求失败：{e}"
+                f"SiliconFlow 调用失败：{e}"
             )
 
         if attempt < MAX_RETRIES:
@@ -479,306 +997,18 @@ def call_ai(messages):
             )
 
     raise RuntimeError(
-        f"SiliconFlow 连续 "
-        f"{MAX_RETRIES} 次请求失败："
+        f"SiliconFlow 连续 {MAX_RETRIES} 次调用失败："
         f"{last_error}"
     )
 
 
 # ============================================================
-# 构造内容上下文
+# socket timeout 类型兼容
 # ============================================================
 
-def build_news_context(
-    news_list,
-    summary_limit
-):
+import socket
 
-    blocks = []
-
-    for index, news in enumerate(
-        news_list,
-        start=1
-    ):
-
-        block = (
-            f"内容编号：{index}\n"
-            f"来源：{news['source']}\n"
-            f"标题：{news['title']}\n"
-            f"发布时间：{news['pub_date']}\n"
-            f"原文链接：{news['link']}\n"
-            f"RSS摘要："
-            f"{truncate_text(news['summary'], summary_limit)}"
-        )
-
-        blocks.append(block)
-
-    context = "\n\n".join(blocks)
-
-    return truncate_text(
-        context,
-        MAX_SCREENING_CONTEXT_CHARS
-    )
-
-
-# ============================================================
-# 第一步：AI 选择今天的内容方向
-# ============================================================
-
-def ask_ai(news_list):
-
-    context = build_news_context(
-        news_list,
-        MAX_SCREENING_SUMMARY_CHARS
-    )
-
-    prompt = f"""
-你现在是微信公众号「web前端开发之旅」的主编。
-
-这个公众号不是单纯的 AI 新闻号。
-
-它主要关注：
-
-1. AI技术
-2. AI应用
-3. AI新闻
-4. AI × Web前端
-
-内容比例大致希望保持：
-
-- 40% AI技术
-- 30% AI应用
-- 20% AI新闻
-- 10% AI × 前端
-
-但这不是硬性限制。
-
-最重要的是：
-
-每天只选择一个真正值得写的主题。
-
-==================================================
-你的任务
-==================================================
-
-从下面提供的 RSS 内容中：
-
-选择今天最值得写成一篇微信公众号文章的内容。
-
-你首先需要判断它属于：
-
-ai_news
-ai_technology
-ai_application
-ai_frontend
-
-四种类型中的哪一种。
-
-然后给出评分。
-
-==================================================
-四种内容类型定义
-==================================================
-
-【ai_news】
-
-适合：
-
-- AI模型重大发布
-- AI产品重大更新
-- AI公司重大动作
-- AI安全事件
-- AI行业重要事件
-- 其他具有明显新闻价值的AI事件
-
-【ai_technology】
-
-适合：
-
-- AI模型技术
-- Agent
-- RAG
-- 推理
-- 多模态
-- AI编程
-- 模型训练
-- AI工程实践
-- 开发工具
-- AI基础设施
-- 技术原理或技术实践
-
-【ai_application】
-
-适合：
-
-- AI在真实业务中的应用
-- AI工具
-- AI工作流
-- AI办公
-- AI开发应用
-- AI产品使用场景
-- AI提高工作效率的实际案例
-
-【ai_frontend】
-
-适合：
-
-- AI × Web前端
-- AI辅助前端开发
-- AI生成UI
-- AI Coding
-- 前端工程与AI结合
-- Vue / React / JavaScript 与AI结合
-- AI对前端开发流程的影响
-
-==================================================
-筛选原则
-==================================================
-
-第一优先级：
-
-真正有价值。
-
-第二优先级：
-
-与公众号「web前端开发之旅」读者有关。
-
-第三优先级：
-
-信息明确，能够写出完整文章。
-
-第四优先级：
-
-具有一定的新鲜度。
-
-不要为了追求“新闻”而选择普通内容。
-
-如果今天没有特别重要的AI新闻，
-但有一篇非常值得开发者阅读的AI技术内容，
-
-那么应该选择AI技术。
-
-==================================================
-严格事实规则
-==================================================
-
-你只能根据下面提供的：
-
-- 标题
-- RSS摘要
-- 来源
-- 发布时间
-- 原文链接
-
-进行判断。
-
-绝对不能根据你自己的知识补充事实。
-
-不要因为你“知道这件事情”
-就添加输入中不存在的信息。
-
-==================================================
-排除内容
-==================================================
-
-排除：
-
-- 普通科技新闻
-- 与AI关系很弱的内容
-- 新闻汇总
-- newsletter
-- roundup
-- 周报
-- 每周新闻合集
-- 重复报道
-- 内容过于空泛的文章
-
-==================================================
-评分
-==================================================
-
-score 使用 0～10 分。
-
-参考：
-
-9～10：
-非常值得今天写。
-
-8～8.9：
-值得重点考虑。
-
-7～7.9：
-有一定价值。
-
-低于7：
-不建议作为今天主选题。
-
-评分考虑：
-
-- 内容价值
-- 与公众号读者相关性
-- 信息完整程度
-- 新鲜度
-- 可写性
-
-==================================================
-重复事件
-==================================================
-
-如果多个来源实际上描述同一个事件：
-
-使用相同的 duplicate_group。
-
-程序之后会进行去重。
-
-==================================================
-最多返回5个候选
-==================================================
-
-按照优先级排序。
-
-==================================================
-输出格式
-==================================================
-
-只输出合法 JSON。
-
-不要输出解释。
-
-格式：
-
-[
-  {{
-    "index": 1,
-    "content_type": "ai_technology",
-    "is_ai": true,
-    "score": 9.2,
-    "duplicate_group": "事件或主题名称",
-    "reason": "只能根据输入内容说明为什么值得写"
-  }}
-]
-
-新闻内容：
-
-{context}
-"""
-
-    result = call_ai([
-        {
-            "role": "system",
-            "content": (
-                "你是一个严谨的AI内容主编。"
-                "只能使用输入内容进行判断。"
-                "禁止补充外部事实。"
-            )
-        },
-        {
-            "role": "user",
-            "content": prompt
-        }
-    ])
-
-    return result
+socket_timeout_error = socket.timeout
 
 
 # ============================================================
@@ -787,13 +1017,25 @@ score 使用 0～10 分。
 
 def extract_json(text):
 
+    if not text:
+        raise RuntimeError(
+            "AI 返回为空，无法解析 JSON"
+        )
+
     text = text.strip()
 
+    # 去掉 markdown code fence
     text = re.sub(
-        r"^```(?:json)?\s*",
+        r"^```json\s*",
         "",
         text,
         flags=re.IGNORECASE
+    )
+
+    text = re.sub(
+        r"^```\s*",
+        "",
+        text
     )
 
     text = re.sub(
@@ -802,1317 +1044,510 @@ def extract_json(text):
         text
     )
 
-    # 优先寻找数组
-    start = text.find("[")
-    end = text.rfind("]")
+    text = text.strip()
 
-    if start != -1 and end != -1:
+    try:
+        return json.loads(text)
+    except Exception:
+        pass
 
-        candidate = text[
-            start:end + 1
-        ]
-
-        try:
-
-            return json.loads(
-                candidate
-            )
-
-        except Exception:
-            pass
-
-    # 再寻找对象
+    # 尝试截取第一个 JSON 对象
     start = text.find("{")
     end = text.rfind("}")
 
-    if start != -1 and end != -1:
+    if start >= 0 and end > start:
 
         candidate = text[
             start:end + 1
         ]
 
         try:
-
             return json.loads(
                 candidate
             )
-
         except Exception:
             pass
 
-    raise ValueError(
-        "AI 返回内容无法解析为 JSON：\n"
-        f"{text}"
+    raise RuntimeError(
+        "无法从 AI 返回内容中解析 JSON：\n"
+        + text[:3000]
     )
 
 
 # ============================================================
-# 程序二次过滤
+# AI 选题
 # ============================================================
 
-def filter_selected_news(
-    ai_result,
-    news_list
-):
+def build_screening_context(articles):
 
-    if isinstance(
-        ai_result,
-        dict
+    blocks = []
+
+    for index, article in enumerate(
+        articles,
+        start=1
     ):
 
-        candidates = ai_result.get(
-            "candidates",
+        tags = article.get(
+            "tags",
             []
         )
 
-    else:
-
-        candidates = ai_result
-
-    if not isinstance(
-        candidates,
-        list
-    ):
-
-        return None
-
-    valid = []
-
-    roundup_keywords = [
-        "roundup",
-        "newsletter",
-        "weekly",
-        "this week",
-        "daily roundup",
-        "news roundup",
-        "weekly roundup"
-    ]
-
-    # --------------------------------------------------------
-    # 先把候选按 score 排序
-    #
-    # 这样 duplicate_group 去重时，
-    # 优先保留高分内容。
-    # --------------------------------------------------------
-
-    normalized_candidates = []
-
-    for item in candidates:
-
-        if not isinstance(
-            item,
-            dict
-        ):
-            continue
-
-        try:
-
-            score = float(
-                item.get(
-                    "score",
-                    0
-                )
-            )
-
-        except Exception:
-
-            score = 0
-
-        item["_program_score"] = score
-
-        normalized_candidates.append(
-            item
-        )
-
-    normalized_candidates.sort(
-        key=lambda x: x.get(
-            "_program_score",
-            0
-        ),
-        reverse=True
-    )
-
-    used_duplicate_groups = set()
-
-    for item in normalized_candidates:
-
-        try:
-
-            index = int(
-                item.get(
-                    "index",
-                    0
-                )
-            )
-
-        except Exception:
-
-            continue
-
-        if (
-            index < 1
-            or index > len(news_list)
-        ):
-
-            continue
-
-        if item.get(
-            "is_ai"
-        ) is not True:
-
-            continue
-
-        score = item.get(
-            "_program_score",
-            0
-        )
-
-        if score < 7:
-
-            continue
-
-        duplicate_group = str(
-            item.get(
-                "duplicate_group",
-                ""
-            )
-        ).strip()
-
-        if duplicate_group:
-
-            if duplicate_group in (
-                used_duplicate_groups
-            ):
-
-                continue
-
-            used_duplicate_groups.add(
-                duplicate_group
-            )
-
-        news = news_list[
-            index - 1
-        ]
-
-        title = news[
-            "title"
-        ].lower()
-
-        if any(
-            keyword in title
-            for keyword in roundup_keywords
-        ):
-
-            continue
-
-        content_type = str(
-            item.get(
-                "content_type",
-                "ai_news"
-            )
-        ).strip()
-
-        if content_type not in CONTENT_TYPES:
-
-            content_type = (
-                "ai_news"
-            )
-
-        valid.append({
-            "news": news,
-            "score": score,
-            "reason": str(
-                item.get(
-                    "reason",
-                    ""
-                )
-            ).strip(),
-            "content_type": content_type
-        })
-
-    if not valid:
-
-        return None
-
-    valid.sort(
-        key=lambda x: x["score"],
-        reverse=True
-    )
-
-    return valid[0]
-
-
-# ============================================================
-# 第二步：提取事实
-# ============================================================
-
-def extract_facts(news):
-
-    summary = truncate_text(
-        news["summary"],
-        MAX_FACT_SUMMARY_CHARS
-    )
-
-    prompt = f"""
-你现在负责给微信公众号文章提取事实依据。
-
-只能使用下面这一条RSS内容。
-
-来源：
-{news['source']}
-
-标题：
-{news['title']}
-
-发布时间：
-{news['pub_date']}
-
-RSS摘要：
-{summary}
-
-原文链接：
-{news['link']}
-
-==================================================
-任务
-==================================================
-
-最多提取5条明确事实。
-
-每一条事实都必须能够直接从输入内容确认。
-
-如果输入没有明确说明，就不要写。
-
-==================================================
-绝对禁止
-==================================================
-
-不要补充你自己的知识。
-
-不要自行添加：
-
-- 数字
-- 人名
-- 时间
-- 公司内部信息
-- benchmark
-- 实验结果
-- 论文信息
-- 专家观点
-- 技术细节
-- 产品参数
-- 用户规模
-- 市场数据
-- 原因
-- 后果
-- 商业影响
-- 行业预测
-- 未来计划
-
-特别注意：
-
-不能因为你“知道这个产品”
-就自动补充产品功能。
-
-不能因为你“知道这家公司”
-就自动补充公司背景。
-
-只能使用输入内容。
-
-==================================================
-输出
-==================================================
-
-只输出合法 JSON。
-
-例如：
-
-[
-  "事实1",
-  "事实2",
-  "事实3"
-]
-
-如果只能确认一条，就只输出一条。
+        if not isinstance(tags, list):
+            tags = []
+
+        block = f"""
+【候选文章 {index}】
+来源：{article.get("source", "")}
+标题：{article.get("title", "")}
+发布时间：{article.get("pub_date", "")}
+标签：{", ".join(tags)}
+链接：{article.get("link", "")}
+简介：{article.get("summary", "")}
+
+原文正文：
+{truncate_text(article.get("body", ""), 3000)}
 """
 
-    result = call_ai([
-        {
-            "role": "system",
-            "content": (
-                "你是事实核查编辑。"
-                "只能提取输入中明确存在的事实。"
-            )
-        },
-        {
-            "role": "user",
-            "content": prompt
-        }
-    ])
+        blocks.append(block)
 
-    facts = extract_json(
-        result
+    context = "\n".join(blocks)
+
+    return truncate_text(
+        context,
+        MAX_SCREENING_CONTEXT_CHARS
     )
 
-    if not isinstance(
-        facts,
-        list
-    ):
 
-        return []
+def select_article(articles):
 
-    cleaned = []
-
-    for fact in facts[:5]:
-
-        if not isinstance(
-            fact,
-            str
-        ):
-
-            continue
-
-        fact = clean_text(
-            fact
+    if not articles:
+        raise RuntimeError(
+            "没有可供 AI 筛选的文章"
         )
 
-        if fact:
-
-            cleaned.append(
-                fact
-            )
-
-    return cleaned
-
-
-# ============================================================
-# 第三步：生成完整公众号文章
-# ============================================================
-
-def generate_article(
-    news,
-    facts,
-    content_type
-):
-
-    summary = truncate_text(
-        news["summary"],
-        MAX_ARTICLE_SUMMARY_CHARS
-    )
-
-    facts_text = "\n".join(
-        f"- {fact}"
-        for fact in facts
-    )
-
-    type_name = CONTENT_TYPES.get(
-        content_type,
-        "AI内容"
+    context = build_screening_context(
+        articles
     )
 
     prompt = f"""
-你现在是微信公众号「web前端开发之旅」的主编。
+你是一个中文技术公众号编辑。
 
-今天确定的文章类型：
+公众号名称：web前端开发之旅
 
-{type_name}
+今天的选题范围：
 
-请围绕下面这一个核心主题，
-写一篇完整的中文微信公众号文章。
+1. Web 前端技术
+2. 前端工程化
+3. JavaScript / TypeScript
+4. React / Vue / Angular
+5. CSS / HTML / 浏览器
+6. Web 性能
+7. 前端 AI
+8. AI Coding
+9. LLM 与 Web 开发结合
+10. AI Agent 与前端开发结合
 
-注意：
+下面是今天抓取到的候选原文。
 
-这不是新闻列表。
+你的任务不是写文章，而是从中选择一篇最适合今天公众号深入改写的文章。
 
-也不是资料堆砌。
+选择标准：
 
-必须是一篇完整、连贯、
-有阅读价值的文章。
+- 必须与 Web 前端或 Web + AI 有直接关系
+- 必须有足够完整的技术内容
+- 更偏技术实践、原理、工程经验，而不是新闻搬运
+- 排除招聘、推广、抽奖、newsletter、roundup
+- 排除明显标题党
+- 排除正文过短的文章
+- 不要因为英文标题看起来热门就选择
+- 必须根据实际提供的正文判断
 
-==================================================
-核心信息
-==================================================
+非常重要：
+
+只能根据下面提供的内容判断。
+不要补充候选文章中没有出现的信息。
+
+只返回 JSON：
+
+{{
+  "selected_index": 1,
+  "reason": "简短说明为什么选择这篇"
+}}
+
+候选文章：
+
+{context}
+"""
+
+    result = call_ai(
+        prompt,
+        max_tokens=1200
+    )
+
+    data = extract_json(result)
+
+    selected_index = data.get(
+        "selected_index"
+    )
+
+    try:
+        selected_index = int(
+            selected_index
+        )
+    except Exception:
+        raise RuntimeError(
+            "AI 返回的 selected_index 不是数字"
+        )
+
+    if not (
+        1 <= selected_index <= len(articles)
+    ):
+        raise RuntimeError(
+            f"AI 选择序号无效：{selected_index}"
+        )
+
+    selected = articles[
+        selected_index - 1
+    ]
+
+    print()
+    print("=" * 70)
+    print("AI 最终选题")
+    print("=" * 70)
+    print(
+        f"标题：{selected['title']}"
+    )
+    print(
+        f"来源：{selected['source']}"
+    )
+    print(
+        f"链接：{selected['link']}"
+    )
+    print(
+        f"选择理由：{data.get('reason', '')}"
+    )
+    print("=" * 70)
+
+    return selected
+
+
+# ============================================================
+# AI 生成公众号文章
+# ============================================================
+
+def generate_article(source_article):
+
+    title = source_article.get(
+        "title",
+        ""
+    )
+
+    source = source_article.get(
+        "source",
+        ""
+    )
+
+    original_link = source_article.get(
+        "link",
+        ""
+    )
+
+    pub_date = source_article.get(
+        "pub_date",
+        ""
+    )
+
+    body = source_article.get(
+        "body",
+        ""
+    )
+
+    prompt = f"""
+你是一名中文 Web 前端技术公众号编辑。
+
+公众号：
+web前端开发之旅
+
+现在需要把一篇英文 Web 技术文章，改写成一篇中文微信公众号技术文章。
+
+【原文信息】
 
 来源：
-{news['source']}
+{source}
 
-原始标题：
-{news['title']}
+原文标题：
+{title}
 
 发布时间：
-{news['pub_date']}
+{pub_date}
 
-RSS摘要：
-{summary}
+原文链接：
+{original_link}
 
-已经确认的事实：
+【原文正文】
 
-{facts_text}
+{truncate_text(body, MAX_ARTICLE_CHARS)}
 
-原文：
-{news['link']}
+============================================================
+写作要求
+============================================================
 
-==================================================
-最重要的事实规则
-==================================================
+第一原则：
 
-你只能使用：
-
-1. 原始标题
-2. RSS摘要
-3. 已确认事实
-
-作为事实依据。
-
-绝对不能从自己的知识库补充事实。
+必须严格基于原文。
 
 禁止编造：
 
-- 数字
-- 人名
+- 人物
+- 公司
+- 产品
+- 技术特性
+- API
+- 性能数据
+- Benchmark
+- 百分比
+- 用户规模
 - 时间
-- 公司内部信息
-- benchmark
-- 实验数据
-- 论文
-- 专家观点
-- 技术细节
-- 产品参数
-- 用户规模
-- 市场数据
-- 原因
-- 后果
-- 商业影响
-- 行业预测
-- 未来计划
+- 项目背景
+- 原文没有出现的技术结论
+- 原文没有出现的因果关系
 
-如果资料没有提供，
-就不要写。
+如果原文没有提供某项信息，就不要自行补充。
 
-==================================================
-分析可以写，但必须区分
-==================================================
+不要写：
 
-允许加入编辑分析。
-
-例如：
-
-“如果只看这一次变化，真正值得关注的其实是……”
-
-“从开发者的角度来看，这里面有一个很现实的问题……”
-
-“这件事情更值得我们关注的地方，并不是……”
-
-这些属于编辑观点。
-
-但是：
-
-不能把自己的推测写成新闻事实。
-
-尤其禁止自行推测：
-
-- 开发者动机
-- 产品设计目的
-- 算法原因
-- 模型训练原因
-- 商业目的
-- 平台策略
-- 用户规模
-- 市场影响
-- 未来趋势
-
-除非输入资料明确说明。
-
-==================================================
-高风险表达
-==================================================
-
-以下表达如果没有输入依据，不要使用：
-
+“据业内人士认为”
+“业内普遍认为”
 “这意味着……”
-“这表明……”
-“这可能是因为……”
-“这或许是因为……”
-“原因在于……”
-“业内认为……”
-“专家表示……”
-“市场普遍认为……”
+“未来一定……”
 “有望……”
-“预计……”
-“未来将……”
-“未来会……”
-“开发者正在……”
-“平台正在……”
-“背后的原因是……”
+“必将……”
+“相信……”
+“可以看出……”
+等没有原文事实依据的判断。
 
-如果只是编辑观点，
-应该明确写成观点，
-而不是伪装成事实。
+可以做正常的中文技术解释，但解释必须能够从原文内容直接推导出来。
 
-==================================================
-文章风格
-==================================================
+============================================================
+文章定位
+============================================================
 
-公众号：
+不是翻译。
 
-web前端开发之旅
+而是：
 
-读者主要是：
+“准确理解原文后，用中文重新组织成一篇适合中国开发者阅读的技术文章。”
 
-- Web前端开发者
-- 软件开发者
-- AI开发者
-- AI工具使用者
-- 对AI技术感兴趣的程序员
+可以：
 
-文章风格：
+- 调整段落顺序
+- 合并重复内容
+- 把英文表达转换成自然中文
+- 重新设计小标题
+- 对代码示例重新命名变量
+- 使用不同的示例数据
+- 使用不同的代码场景表达同一个技术点
 
-- 简洁
-- 清楚
-- 有观点
-- 有解释
-- 有自然过渡
-- 少一点“AI生成感”
-- 不要像新闻通讯社
-- 不要像论文
-- 不要疯狂堆专业术语
-- 不要为了凑字数重复内容
+但不能改变原文技术含义。
 
-可以适当使用：
-
-“其实”
-“真正值得注意的是”
-“换个角度看”
-“对开发者来说”
-
-但不要滥用。
-
-==================================================
-不同类型的写法
-==================================================
-
-如果是：
-
-【AI新闻】
-
-重点：
-
-发生了什么
-→ 关键事实
-→ 为什么值得关注
-→ 对开发者/AI从业者有什么启发
-
-【AI技术】
-
-重点：
-
-这个技术/变化是什么
-→ 输入资料明确说明了什么
-→ 为什么值得关注
-→ 开发者应该怎么看
-
-不要擅自补充技术原理。
-
-如果原资料没有技术细节，
-就不要自己补技术细节。
-
-【AI应用】
-
-重点：
-
-这个AI应用/工具解决什么问题
-→ 输入资料明确展示了什么
-→ 为什么值得关注
-→ 对普通开发者/用户有什么启发
-
-不要自行增加产品功能。
-
-【AI × 前端】
-
-重点：
-
-AI与前端之间发生了什么
-→ 明确事实
-→ 对开发流程的启发
-→ 前端开发者应该关注什么
-
-不要自行编造Vue、React、JavaScript、
-浏览器或具体框架的技术细节。
-
-==================================================
-文章长度
-==================================================
-
-目标：
-
-约1500～2200个中文字符。
-
-但：
-
-宁可内容紧凑，
-也不要为了凑字数重复。
-
-==================================================
+============================================================
 文章结构
-==================================================
+============================================================
 
-必须包含：
+必须输出：
 
-title
-lead
-sections
-ending
+1. title
+2. lead
+3. sections
+4. ending
 
-sections：
+sections 最多 4 个。
 
-必须生成4个章节。
-
-程序最后会固定增加：
-
-05 写在最后
-
-因此你只生成前4章。
-
-==================================================
-章节要求
-==================================================
-
-每章：
-
-heading
-paragraphs
-subsections
-highlight
-list
-
-其中：
-
-subsections 可以为空。
-
-highlight 可以为空。
-
-list 可以为空。
-
-不要为了格式而硬塞内容。
-
-==================================================
-章节标题
-==================================================
-
-不要使用这种机械标题：
-
-“发生了什么”
-“关键细节”
-“为什么值得关注”
-“对开发者的启发”
-
-应该根据文章主题生成有阅读感的标题。
-
-每个标题尽量：
-
-20个汉字以内。
-
-不能制造输入中不存在的事实。
-
-==================================================
-小标题
-==================================================
-
-适合时使用：
-
-“🔹 一个容易被忽视的细节”
-
-“🔹 真正值得关注的地方”
-
-“🧩 从开发者角度怎么看”
-
-不要机械添加。
-
-==================================================
-highlight
-==================================================
-
-只有真正适合总结时使用。
-
-例如：
-
-“一句话总结：真正值得关注的，不只是这一次变化，而是开发者正在重新理解AI工具的使用方式。”
-
-这是编辑总结。
-
-不能伪造新闻事实。
-
-不适合就：
-
-""
-
-==================================================
-list
-==================================================
-
-只有适合时使用。
-
-不要为了格式硬凑。
-
-==================================================
-ending
-==================================================
-
-ending 为2～3段。
-
-要自然收束全文。
-
-不要突然做没有事实依据的行业预测。
-
-==================================================
-JSON
-==================================================
-
-只输出合法JSON。
-
-不要输出Markdown。
-
-不要输出```json。
-
-格式：
+每个 section：
 
 {{
-  "title": "文章标题",
-  "lead": "导语",
-  "sections": [
-    {{
-      "heading": "第一章标题",
-      "paragraphs": [
-        "第一段",
-        "第二段"
-      ],
-      "subsections": [
-        {{
-          "heading": "🔹 小标题",
-          "paragraph": "正文"
-        }}
-      ],
-      "highlight": "",
-      "list": []
-    }}
-  ],
-  "ending": [
+  "heading": "小标题",
+  "paragraphs": [
     "第一段",
     "第二段"
   ]
 }}
 
-==================================================
-最终检查
-==================================================
-
-输出前自己检查：
-
-1. 是否只使用输入事实？
-2. 有没有编造数字？
-3. 有没有编造人名？
-4. 有没有编造专家观点？
-5. 有没有加入输入没有提供的技术细节？
-6. 有没有把分析写成事实？
-7. 是否是一篇完整文章？
-8. 是否只有一个核心主题？
-9. 是否存在重复内容？
-10. 是否符合「web前端开发之旅」？
-11. JSON是否合法？
-"""
-
-    result = call_ai([
-        {
-            "role": "system",
-            "content": (
-                "你是一名严谨的微信公众号编辑。"
-                "输出必须严格遵守JSON格式和事实约束。"
-            )
-        },
-        {
-            "role": "user",
-            "content": prompt
-        }
-    ])
-
-    article = extract_json(
-        result
-    )
-
-    if not isinstance(
-        article,
-        dict
-    ):
-
-        raise ValueError(
-            "AI生成的文章不是JSON对象"
-        )
-
-    return article
-
-
-# ============================================================
-# 第四步：AI 事实审查
-# ============================================================
-
-def review_article_facts(
-    article,
-    news,
-    facts
-):
-
-    """
-    对已经生成的文章进行第二轮事实审查。
-
-    目标不是重新写文章，而是：
-
-    1. 删除没有资料依据的事实；
-    2. 删除未经资料支持的具体数字、人名、技术细节；
-    3. 删除把推测写成事实的内容；
-    4. 保留正常的编辑观点；
-    5. 尽量保持原文章结构、语气和长度。
-    """
-
-    summary = truncate_text(
-        news["summary"],
-        MAX_ARTICLE_SUMMARY_CHARS
-    )
-
-    facts_text = "\n".join(
-        f"- {fact}"
-        for fact in facts
-    )
-
-    article_json = json.dumps(
-        article,
-        ensure_ascii=False,
-        indent=2
-    )
-
-    prompt = f"""
-你现在是微信公众号「web前端开发之旅」的最终事实审查编辑。
-
-你的任务不是重新创作文章。
-
-你的任务是：
-
-检查下面已经生成的公众号文章，
-删除或修改其中没有事实依据的内容。
-
-==================================================
-【一、唯一允许的事实来源】
-==================================================
-
-你只能把下面内容作为新闻事实依据：
-
-【来源】
-{news['source']}
-
-【原始标题】
-{news['title']}
-
-【发布时间】
-{news['pub_date']}
-
-【RSS摘要】
-{summary}
-
-【已经确认的事实】
-{facts_text}
-
-【原文链接】
-{news['link']}
-
-注意：
-
-你不能打开网页。
-
-你不能使用自己的知识。
-
-你不能因为“知道这个事情”
-就补充额外信息。
-
-==================================================
-【二、审查标准】
-==================================================
-
-逐段检查文章。
-
-如果一句话属于事实陈述，
-必须能够从上述资料直接得到支持。
-
-如果不能确认：
-
-删除这句话，
-
-或者改写成不包含未经证实事实的编辑观点。
-
-==================================================
-【三、重点检查这些问题】
-==================================================
-
-重点寻找：
-
-1. RSS摘要没有出现的数字
-2. RSS摘要没有出现的人名
-3. RSS摘要没有出现的公司信息
-4. RSS摘要没有出现的产品功能
-5. RSS摘要没有出现的技术原理
-6. RSS摘要没有出现的技术参数
-7. RSS摘要没有出现的benchmark
-8. RSS摘要没有出现的实验结果
-9. RSS摘要没有出现的用户数量
-10. RSS摘要没有出现的市场数据
-11. RSS摘要没有出现的时间
-12. RSS摘要没有出现的商业信息
-13. RSS摘要没有出现的专家观点
-14. RSS摘要没有出现的开发者动机
-15. RSS摘要没有出现的平台策略
-16. RSS摘要没有出现的算法原因
-17. RSS摘要没有出现的模型训练原因
-18. RSS摘要没有出现的未来计划
-
-==================================================
-【四、特别警惕 AI 自行推理】
-==================================================
-
-以下类型的句子，如果没有输入资料直接支持，
-必须删除或者改成明确的编辑观点：
-
-“这意味着……”
-“这表明……”
-“这可能是因为……”
-“这或许是因为……”
-“原因在于……”
-“背后的原因是……”
-“业内认为……”
-“专家表示……”
-“市场普遍认为……”
-“有望……”
-“预计……”
-“未来将……”
-“未来会……”
-“开发者正在……”
-“平台正在……”
-“开发者这样做是为了……”
-“平台这样设计是为了……”
-
-尤其不能凭空解释：
-
-- 为什么某个AI agent这样做
-- 为什么平台允许这样做
-- 为什么开发者这样设计
-- 为什么模型产生某种行为
-- 某种行为背后的商业目的
-- 某种行为背后的训练原因
-
-==================================================
-【五、允许保留编辑观点】
-==================================================
-
-公众号文章不能完全没有观点。
-
-以下属于编辑观点，可以保留：
-
-“真正值得注意的是……”
-“从开发者角度看……”
-“换个角度看……”
-“这件事情更值得我们关注的地方，并不是……”
-“如果只看这一次事件……”
-
-但编辑观点不能偷偷包含未经证实的新事实。
-
-例如：
-
-可以：
-
-“从开发者角度看，这件事情提醒我们需要重新思考AI工具的边界。”
-
-不可以：
-
-“这说明越来越多开发者正在把AI代理部署到社交平台。”
-
-因为后一句增加了输入没有提供的事实。
-
-==================================================
-【六、不要过度删除】
-==================================================
-
-不要因为害怕事实错误，
-把整篇文章改得只剩下几句话。
-
-文章应该仍然：
-
-- 有标题
-- 有导语
-- 有4个章节
-- 有自然过渡
-- 有编辑观点
-- 有结尾
-- 有公众号阅读感
-
-只删除没有依据的事实。
-
-==================================================
-【七、不要改变文章主题】
-==================================================
-
-不能因为资料不足，
-就自己换一个主题。
-
-不能加入其他新闻。
-
-不能加入其他产品。
-
-不能加入你自己的案例。
-
-不能加入外部知识。
-
-==================================================
-【八、保持原 JSON 结构】
-==================================================
-
-必须返回：
+如果需要，可以增加：
 
 {{
-  "title": "...",
-  "lead": "...",
-  "sections": [
-    {{
-      "heading": "...",
-      "paragraphs": [],
-      "subsections": [],
-      "highlight": "",
-      "list": []
-    }}
-  ],
-  "ending": []
+  "type": "subsection",
+  "heading": "小标题",
+  "paragraphs": [...]
 }}
 
-必须保持：
+或者：
 
-sections最多4个。
+{{
+  "type": "highlight",
+  "text": "重点说明"
+}}
 
-不要增加新的字段。
+或者：
 
-==================================================
-【九、最终检查】
-==================================================
+{{
+  "type": "list",
+  "items": [
+    "项目一",
+    "项目二"
+  ]
+}}
 
-输出前逐项检查：
+============================================================
+公众号风格
+============================================================
 
-1. 每个事实是否有输入依据？
-2. 有没有自己增加数字？
-3. 有没有自己增加人名？
-4. 有没有自己增加公司背景？
-5. 有没有自己增加产品功能？
-6. 有没有自己增加技术细节？
-7. 有没有自己增加原因？
-8. 有没有自己增加结果？
-9. 有没有自己增加未来预测？
-10. 有没有把猜测写成事实？
-11. 是否仍然是一篇完整文章？
-12. 是否保持原来的核心主题？
-13. JSON是否合法？
+开头不要写成新闻播报。
 
-只输出合法JSON。
+第一段要直接告诉读者：
 
-不要输出解释。
+“这篇文章到底解决了什么问题？”
 
-不要输出Markdown。
+然后逐步解释：
 
-不要输出```json。
+问题 → 原理 → 实现 → 注意事项 → 总结
 
-==================================================
-【待审查文章】
-==================================================
+文章应该像一个有经验的前端开发者在给其他开发者讲技术。
 
-{article_json}
+语言：
+
+- 中文自然
+- 简洁
+- 清楚
+- 有技术含量
+- 不要翻译腔
+- 不要过度营销
+- 不要 AI 味
+- 不要为了凑字数重复观点
+
+关键技术名词可以使用英文。
+
+代码不要大量复制原文。
+
+如果原文存在代码，可以保留必要的代码思路，并允许修改变量名、数据和示例场景。
+
+============================================================
+标题
+============================================================
+
+标题要适合微信公众号。
+
+不要：
+
+- 标题党
+- 夸张
+- 虚构结果
+- 虚构性能提升
+- 虚构“重大突破”
+
+标题应该准确反映原文核心技术主题。
+
+============================================================
+输出格式
+============================================================
+
+只返回合法 JSON。
+
+不要 Markdown。
+
+格式：
+
+{{
+  "title": "文章标题",
+  "lead": "开头导语",
+  "sections": [
+    {{
+      "heading": "第一部分",
+      "paragraphs": [
+        "正文"
+      ]
+    }}
+  ],
+  "ending": "结尾总结"
+}}
+
+不要输出 source 和 original_link。
+
+程序会自动补充来源信息。
+
 """
 
-    result = call_ai([
-        {
-            "role": "system",
-            "content": (
-                "你是最终事实审查编辑。"
-                "你的首要任务是删除未经输入资料支持的事实。"
-                "禁止使用外部知识。"
-                "不要重新编造内容。"
-                "必须输出合法JSON。"
-            )
-        },
-        {
-            "role": "user",
-            "content": prompt
-        }
-    ])
-
-    reviewed_article = extract_json(
-        result
+    result = call_ai(
+        prompt,
+        max_tokens=5000
     )
 
-    if not isinstance(
-        reviewed_article,
-        dict
-    ):
+    data = extract_json(result)
 
-        raise ValueError(
-            "AI事实审查结果不是JSON对象"
+    if not isinstance(data, dict):
+        raise RuntimeError(
+            "AI 文章结果不是 JSON 对象"
         )
 
-    return reviewed_article
-
-
-# ============================================================
-# 清洗标题
-# ============================================================
-
-def clean_title(title):
-
-    title = str(
-        title or ""
-    ).strip()
-
-    title = re.sub(
-        r"\*\*(.*?)\*\*",
-        r"\1",
-        title
+    title = clean_text(
+        data.get("title", "")
     )
 
-    title = re.sub(
-        r"^#+\s*",
-        "",
-        title
+    lead = clean_text(
+        data.get("lead", "")
     )
 
-    title = title.strip("`")
-
-    title = re.sub(
-        r"\s+",
-        " ",
-        title
+    ending = clean_text(
+        data.get("ending", "")
     )
 
-    return title.strip()
-
-
-# ============================================================
-# 清洗文章内容
-# ============================================================
-
-def clean_generated_text(text):
-
-    if not text:
-        return ""
-
-    text = str(text)
-
-    # Markdown链接 → 只保留文字
-    text = re.sub(
-        r"\[([^\]]+)\]\([^)]+\)",
-        r"\1",
-        text
-    )
-
-    # 删除裸URL
-    text = re.sub(
-        r"https?://\S+",
-        "",
-        text
-    )
-
-    # Markdown加粗
-    text = re.sub(
-        r"\*\*(.*?)\*\*",
-        r"\1",
-        text
-    )
-
-    # Markdown斜体
-    text = re.sub(
-        r"(?<!\*)\*([^*]+)\*(?!\*)",
-        r"\1",
-        text
-    )
-
-    # Markdown标题
-    text = re.sub(
-        r"^#{1,6}\s*",
-        "",
-        text
-    )
-
-    text = re.sub(
-        r"\n{3,}",
-        "\n\n",
-        text
-    )
-
-    return text.strip()
-
-
-# ============================================================
-# 标准化文章 JSON
-# ============================================================
-
-def normalize_article(
-    article,
-    news,
-    content_type
-):
-
-    title = clean_title(
-        article.get(
-            "title",
-            ""
-        )
-    )
-
-    if not title:
-
-        title = clean_title(
-            news["title"]
-        )
-
-    lead = clean_generated_text(
-        article.get(
-            "lead",
-            ""
-        )
-    )
-
-    normalized_sections = []
-
-    sections = article.get(
+    sections = data.get(
         "sections",
         []
     )
+
+    if not title:
+        raise RuntimeError(
+            "AI 没有生成文章标题"
+        )
+
+    if not lead:
+        raise RuntimeError(
+            "AI 没有生成文章导语"
+        )
+
+    if not ending:
+        raise RuntimeError(
+            "AI 没有生成文章结尾"
+        )
 
     if not isinstance(
         sections,
         list
     ):
+        raise RuntimeError(
+            "AI 返回的 sections 格式错误"
+        )
 
-        sections = []
+    # 最多保留 4 个章节
+    sections = sections[:4]
 
-    for section in sections[:4]:
+    normalized_sections = []
+
+    for section in sections:
 
         if not isinstance(
             section,
             dict
         ):
-
             continue
 
-        heading = clean_generated_text(
+        heading = clean_text(
             section.get(
                 "heading",
                 ""
             )
         )
-
-        if not heading:
-            continue
 
         paragraphs = section.get(
             "paragraphs",
@@ -2123,168 +1558,178 @@ def normalize_article(
             paragraphs,
             list
         ):
-
             paragraphs = []
 
-        cleaned_paragraphs = []
+        clean_paragraphs = []
 
         for paragraph in paragraphs:
 
-            paragraph = clean_generated_text(
-                paragraph
-            )
-
-            if paragraph:
-
-                cleaned_paragraphs.append(
-                    paragraph
-                )
-
-        subsections = section.get(
-            "subsections",
-            []
-        )
-
-        if not isinstance(
-            subsections,
-            list
-        ):
-
-            subsections = []
-
-        cleaned_subsections = []
-
-        for subsection in subsections:
-
             if not isinstance(
-                subsection,
-                dict
+                paragraph,
+                str
             ):
-
                 continue
 
-            subheading = clean_generated_text(
-                subsection.get(
-                    "heading",
-                    ""
-                )
-            )
+            paragraph = paragraph.strip()
 
-            paragraph = clean_generated_text(
-                subsection.get(
-                    "paragraph",
-                    ""
-                )
-            )
-
-            if (
-                subheading
-                and paragraph
-            ):
-
-                cleaned_subsections.append({
-                    "heading": subheading,
-                    "paragraph": paragraph
-                })
-
-        highlight = clean_generated_text(
-            section.get(
-                "highlight",
-                ""
-            )
-        )
-
-        items = section.get(
-            "list",
-            []
-        )
-
-        if not isinstance(
-            items,
-            list
-        ):
-
-            items = []
-
-        cleaned_list = []
-
-        for item in items:
-
-            item = clean_generated_text(
-                item
-            )
-
-            if item:
-
-                cleaned_list.append(
-                    item
+            if paragraph:
+                clean_paragraphs.append(
+                    paragraph[:MAX_SECTION_CHARS]
                 )
 
-        normalized_sections.append({
-            "heading": heading,
-            "paragraphs": cleaned_paragraphs,
-            "subsections": cleaned_subsections,
-            "highlight": highlight,
-            "list": cleaned_list
-        })
+        if heading and clean_paragraphs:
 
-    ending = article.get(
-        "ending",
-        []
-    )
+            normalized_sections.append({
+                "heading": heading,
+                "paragraphs": clean_paragraphs
+            })
 
-    if not isinstance(
-        ending,
-        list
-    ):
-
-        ending = []
-
-    cleaned_ending = []
-
-    for paragraph in ending:
-
-        paragraph = clean_generated_text(
-            paragraph
+    if not normalized_sections:
+        raise RuntimeError(
+            "AI 没有生成有效正文 sections"
         )
 
-        if paragraph:
-
-            cleaned_ending.append(
-                paragraph
-            )
-
-    return {
+    article = {
         "title": title,
         "lead": lead,
         "sections": normalized_sections,
-        "ending": cleaned_ending,
-
-        "content_type": content_type,
-
-        "content_type_name":
-            CONTENT_TYPES.get(
-                content_type,
-                "AI内容"
-            ),
-
-        "source": news["source"],
-        "original_link": news["link"],
-        "pub_date": news["pub_date"],
-        "news_title": news["title"]
+        "ending": ending,
+        "content_type": "web_frontend_tech",
+        "content_type_name": "Web前端技术",
+        "source": source_article.get(
+            "source",
+            ""
+        ),
+        "original_link": source_article.get(
+            "link",
+            ""
+        ),
+        "pub_date": source_article.get(
+            "pub_date",
+            ""
+        ),
+        "news_title": source_article.get(
+            "title",
+            ""
+        ),
     }
+
+    return article
+
+
+# ============================================================
+# 下载封面
+# ============================================================
+
+def is_valid_image_content(data):
+    if not data:
+        return False
+
+    # JPEG
+    if data.startswith(b"\xff\xd8\xff"):
+        return True
+
+    # PNG
+    if data.startswith(b"\x89PNG\r\n\x1a\n"):
+        return True
+
+    # WEBP
+    if data.startswith(b"RIFF") and b"WEBP" in data[:16]:
+        return True
+
+    return False
+
+
+def download_cover(image_urls):
+
+    if not image_urls:
+        print(
+            "原文没有找到图片，无法下载 cover.jpg"
+        )
+        return False
+
+    for index, image_url in enumerate(
+        image_urls,
+        start=1
+    ):
+
+        if not image_url:
+            continue
+
+        print()
+        print(
+            f"尝试下载封面图片 "
+            f"{index}/{len(image_urls)}"
+        )
+        print(image_url)
+
+        try:
+            data = http_get(
+                image_url,
+                headers={
+                    "Accept": (
+                        "image/avif,image/webp,"
+                        "image/apng,image/svg+xml,"
+                        "image/*,*/*;q=0.8"
+                    ),
+                    "Referer": (
+                        "https://medium.com/"
+                        if "medium.com" in image_url
+                        else "https://dev.to/"
+                    )
+                },
+                timeout=30
+            )
+
+            if not is_valid_image_content(
+                data
+            ):
+                print(
+                    "下载内容不是常见图片格式，跳过"
+                )
+                continue
+
+            # 微信素材接口对图片大小有限制，
+            # 这里控制在较合理范围。
+            if len(data) > 8 * 1024 * 1024:
+                print(
+                    "图片超过 8MB，跳过"
+                )
+                continue
+
+            with open(
+                COVER_FILE,
+                "wb"
+            ) as f:
+                f.write(data)
+
+            print(
+                f"封面图片下载成功："
+                f"{COVER_FILE}"
+            )
+
+            return True
+
+        except Exception as e:
+            print(
+                f"图片下载失败：{e}"
+            )
+
+    print(
+        "所有候选图片均下载失败"
+    )
+
+    return False
 
 
 # ============================================================
 # 保存 article.json
 # ============================================================
 
-def save_article_json(article):
-
-    output_file = "article.json"
+def save_article(article):
 
     with open(
-        output_file,
+        ARTICLE_FILE,
         "w",
         encoding="utf-8"
     ) as f:
@@ -2296,490 +1741,202 @@ def save_article_json(article):
             indent=2
         )
 
-    print("")
-
-    print("=" * 60)
-
+    print()
+    print("=" * 70)
     print(
-        "公众号文章已经生成"
+        f"文章已保存：{ARTICLE_FILE}"
     )
-
-    print(
-        f"文件：{output_file}"
-    )
-
     print(
         f"标题：{article['title']}"
     )
-
     print(
-        f"内容类型："
-        f"{article.get('content_type_name', 'AI内容')}"
+        f"来源：{article['source']}"
     )
-
     print(
-        f"正文结构："
-        f"{len(article['sections'])} 个章节"
+        f"原文：{article['original_link']}"
     )
-
-    print("=" * 60)
+    print("=" * 70)
 
 
 # ============================================================
-# 主程序
+# 主流程
 # ============================================================
 
 def main():
 
-    print("")
-
+    print()
+    print("=" * 70)
+    print("Web 前端 + AI 公众号自动化")
+    print("Medium + DEV.to → SiliconFlow → article.json")
     print("=" * 70)
 
-    print(
-        "        0元 AI 内容公众号自动化 V2.1"
-    )
+    # --------------------------------------------------------
+    # 1. 检查 SiliconFlow Key
+    # --------------------------------------------------------
 
-    print(
-        "        AI News / Tech / App / Frontend"
-    )
+    if not SILICONFLOW_API_KEY:
+        raise RuntimeError(
+            "没有找到 SILICONFLOW_API_KEY"
+        )
 
-    print(
-        "        + AI Fact Review"
-    )
+    # --------------------------------------------------------
+    # 2. 抓 Medium
+    # --------------------------------------------------------
 
-    print(
-        "        → WeChat Draft"
-    )
+    all_articles = []
 
-    print("=" * 70)
+    for source_name, feed_url in MEDIUM_FEEDS:
 
-    print("")
-
-    print(
-        "公众号：web前端开发之旅"
-    )
-
-    print(
-        f"执行日期：{get_beijing_date()}"
-    )
-
-    all_news = []
-
-    # ========================================================
-    # 1. 抓取 RSS
-    # ========================================================
-
-    print("")
-
-    print("=" * 70)
-
-    print(
-        "【1/6】开始抓取 AI / 科技信息"
-    )
-
-    print("=" * 70)
-
-    for source_name, url in RSS_SOURCES.items():
-
-        news = fetch_rss(
+        medium_articles = fetch_medium_feed(
             source_name,
-            url
+            feed_url
         )
 
-        all_news.extend(
-            news
+        all_articles.extend(
+            medium_articles
         )
 
-    print("")
+    # --------------------------------------------------------
+    # 3. 抓 DEV.to
+    # --------------------------------------------------------
 
-    print(
-        f"所有 RSS 内容总数："
-        f"{len(all_news)}"
+    dev_articles = fetch_dev_articles()
+
+    all_articles.extend(
+        dev_articles
     )
 
-    if not all_news:
+    print()
+    print("=" * 70)
+    print(
+        f"原始文章总数：{len(all_articles)}"
+    )
+    print("=" * 70)
 
+    # --------------------------------------------------------
+    # 4. 关键词预筛
+    # --------------------------------------------------------
+
+    filtered_articles = filter_articles(
+        all_articles
+    )
+
+    print()
+    print("=" * 70)
+    print(
+        f"关键词过滤后：{len(filtered_articles)} 篇"
+    )
+    print("=" * 70)
+
+    if not filtered_articles:
         raise RuntimeError(
-            "没有抓取到任何内容"
+            "没有找到符合 Web 前端 / AI 条件的文章"
         )
 
-    # ========================================================
-    # 2. AI 选题
-    # ========================================================
+    # --------------------------------------------------------
+    # 5. 限制候选数量
+    # --------------------------------------------------------
 
-    print("")
-
-    print("=" * 70)
-
-    print(
-        "【2/6】AI 正在判断今天最值得写的主题"
-    )
-
-    print("=" * 70)
-
-    screening_result = ask_ai(
-        all_news
-    )
-
-    print("")
-
-    print(
-        "AI 原始选题结果："
-    )
-
-    print(
-        screening_result
-    )
-
-    ai_result = extract_json(
-        screening_result
-    )
-
-    selected_result = filter_selected_news(
-        ai_result,
-        all_news
-    )
-
-    if not selected_result:
-
-        raise RuntimeError(
-            "AI 没有筛选出符合条件的内容"
-        )
-
-    selected_news = selected_result[
-        "news"
+    candidates = filtered_articles[
+        :MAX_CANDIDATES_FOR_AI
     ]
 
-    selected_score = selected_result[
-        "score"
-    ]
+    print()
+    print("进入 AI 筛选的候选文章：")
 
-    selected_reason = selected_result[
-        "reason"
-    ]
-
-    selected_content_type = (
-        selected_result[
-            "content_type"
-        ]
-    )
-
-    print("")
-
-    print("=" * 70)
-
-    print(
-        "最终选中的今日主题"
-    )
-
-    print("=" * 70)
-
-    print(
-        f"内容类型："
-        f"{CONTENT_TYPES.get(selected_content_type)}"
-    )
-
-    print(
-        f"评分：{selected_score}"
-    )
-
-    print(
-        f"来源："
-        f"{selected_news['source']}"
-    )
-
-    print(
-        f"标题："
-        f"{selected_news['title']}"
-    )
-
-    print(
-        f"发布时间："
-        f"{selected_news['pub_date']}"
-    )
-
-    print(
-        f"链接："
-        f"{selected_news['link']}"
-    )
-
-    print(
-        f"选题理由："
-        f"{selected_reason}"
-    )
-
-    # ========================================================
-    # 3. 提取事实
-    # ========================================================
-
-    print("")
-
-    print("=" * 70)
-
-    print(
-        "【3/6】开始提取可靠事实"
-    )
-
-    print("=" * 70)
-
-    facts = extract_facts(
-        selected_news
-    )
-
-    print("")
-
-    print(
-        "确认事实："
-    )
-
-    for index, fact in enumerate(
-        facts,
+    for index, article in enumerate(
+        candidates,
         start=1
     ):
 
         print(
-            f"{index}. {fact}"
+            f"{index}. "
+            f"[{article['source']}] "
+            f"{article['title']}"
         )
 
-    if not facts:
+    # --------------------------------------------------------
+    # 6. AI 选择最终文章
+    # --------------------------------------------------------
 
-        print(
-            "警告：没有提取到明确事实。"
-        )
+    selected_article = select_article(
+        candidates
+    )
 
-        print(
-            "文章生成将严格依赖标题和RSS摘要。"
-        )
+    # --------------------------------------------------------
+    # 7. AI 改写公众号文章
+    # --------------------------------------------------------
 
-    # ========================================================
-    # 4. 生成文章
-    # ========================================================
-
-    print("")
-
+    print()
+    print("=" * 70)
+    print("开始生成中文公众号文章")
     print("=" * 70)
 
-    print(
-        "【4/6】开始生成完整公众号文章"
+    article = generate_article(
+        selected_article
     )
 
-    print("=" * 70)
+    # --------------------------------------------------------
+    # 8. 保存 article.json
+    # --------------------------------------------------------
 
-    article_raw = generate_article(
-        selected_news,
-        facts,
-        selected_content_type
-    )
-
-    print("")
-
-    print(
-        "初版文章生成完成，开始进行事实审查..."
-    )
-
-    # ========================================================
-    # 5. AI 事实审查
-    # ========================================================
-
-    print("")
-
-    print("=" * 70)
-
-    print(
-        "【5/6】AI 正在进行最终事实审查"
-    )
-
-    print("=" * 70)
-
-    reviewed_article = review_article_facts(
-        article_raw,
-        selected_news,
-        facts
-    )
-
-    print("")
-
-    print(
-        "事实审查完成"
-    )
-
-    print(
-        "未经资料支持的内容已要求删除或改写。"
-    )
-
-    # ========================================================
-    # 标准化最终文章
-    # ========================================================
-
-    article = normalize_article(
-        reviewed_article,
-        selected_news,
-        selected_content_type
-    )
-
-    # ========================================================
-    # 6. 保存
-    # ========================================================
-
-    print("")
-
-    print("=" * 70)
-
-    print(
-        "【6/6】保存 article.json"
-    )
-
-    print("=" * 70)
-
-    save_article_json(
+    save_article(
         article
     )
 
-    # ========================================================
-    # 文章预览
-    # ========================================================
+    # --------------------------------------------------------
+    # 9. 下载原文图片作为 cover
+    # --------------------------------------------------------
 
-    print("")
+    image_urls = selected_article.get(
+        "images",
+        []
+    )
 
+    # DEV.to 如果正文没有图片，则使用 cover_image
+    if not image_urls:
+
+        cover_image = (
+            selected_article.get(
+                "cover_image",
+                ""
+            )
+        )
+
+        if cover_image:
+            image_urls = [
+                cover_image
+            ]
+
+    download_cover(
+        image_urls
+    )
+
+    # --------------------------------------------------------
+    # 10. 最终检查
+    # --------------------------------------------------------
+
+    print()
+    print("=" * 70)
+    print("news_fetcher.py 执行完成")
     print("=" * 70)
 
     print(
-        "最终文章预览"
-    )
-
-    print("=" * 70)
-
-    print("")
-
-    print(
-        "【内容类型】"
+        f"article.json："
+        f"{'存在' if os.path.exists(ARTICLE_FILE) else '不存在'}"
     )
 
     print(
-        article.get(
-            "content_type_name",
-            "AI内容"
-        )
+        f"cover.jpg："
+        f"{'存在' if os.path.exists(COVER_FILE) else '不存在'}"
     )
 
-    print("")
-
+    print()
     print(
-        "【标题】"
+        "下一步将由 ai-news.yml 调用 wechat_test.py"
     )
-
     print(
-        article["title"]
-    )
-
-    print("")
-
-    print(
-        "【导语】"
-    )
-
-    print(
-        article["lead"]
-    )
-
-    for index, section in enumerate(
-        article["sections"],
-        start=1
-    ):
-
-        print("")
-
-        print(
-            f"【{index:02d} "
-            f"{section['heading']}】"
-        )
-
-        for paragraph in section[
-            "paragraphs"
-        ]:
-
-            print(
-                paragraph
-            )
-
-        for subsection in section[
-            "subsections"
-        ]:
-
-            print("")
-
-            print(
-                subsection["heading"]
-            )
-
-            print(
-                subsection["paragraph"]
-            )
-
-        if section[
-            "highlight"
-        ]:
-
-            print("")
-
-            print(
-                "【金句】"
-            )
-
-            print(
-                section["highlight"]
-            )
-
-        if section[
-            "list"
-        ]:
-
-            print("")
-
-            for item in section[
-                "list"
-            ]:
-
-                print(
-                    f"• {item}"
-                )
-
-    print("")
-
-    print(
-        "【05 写在最后】"
-    )
-
-    for paragraph in article[
-        "ending"
-    ]:
-
-        print(
-            paragraph
-        )
-
-    print("")
-
-    print(
-        f"来源："
-        f"{article['source']}"
-    )
-
-    print(
-        f"原文："
-        f"{article['original_link']}"
-    )
-
-    print("")
-
-    print("=" * 70)
-
-    print(
-        "AI 内容文章生成完成"
-    )
-
-    print(
-        "V2.1 事实审查流程完成"
+        "把文章提交到微信公众号草稿箱。"
     )
 
     print("=" * 70)
