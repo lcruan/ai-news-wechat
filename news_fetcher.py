@@ -85,16 +85,7 @@ FRONTEND_KEYWORDS = [
     "web engineering",
 ]
 
-# AI 关键词
-#
-# 注意：
-# filter_news() 会使用 AI_KEYWORDS。
-# 原代码没有定义这个变量，因此即使 fetch_url 修复成功，
-# 运行到关键词过滤阶段仍然会出现：
-#
-# NameError: name 'AI_KEYWORDS' is not defined
-#
-# 这里补上，避免第二次运行再次失败。
+
 AI_KEYWORDS = [
     "artificial intelligence",
     "generative ai",
@@ -117,6 +108,7 @@ AI_KEYWORDS = [
     "agentic",
 ]
 
+
 ROUNDUP_KEYWORDS = [
     "newsletter",
     "weekly roundup",
@@ -135,17 +127,6 @@ ROUNDUP_KEYWORDS = [
 def fetch_url(url, timeout=REQUEST_TIMEOUT):
     """
     通用 HTTP GET 请求。
-
-    DEV.to 的列表接口和单篇文章详情接口都会使用这个函数。
-
-    返回：
-        (response_data, content_type)
-
-    response_data:
-        bytes 类型的响应内容
-
-    content_type:
-        HTTP Content-Type
     """
 
     request = urllib.request.Request(
@@ -236,14 +217,12 @@ def clean_text(text):
 
     text = html.unescape(text)
 
-    # 去除 HTML 标签
     text = re.sub(
         r"<[^>]+>",
         " ",
         text,
     )
 
-    # 统一空白
     text = re.sub(
         r"\s+",
         " ",
@@ -290,8 +269,6 @@ def normalize_url(url):
 def contains_keyword(text, keywords):
     """
     判断文本是否包含关键词。
-
-    使用小写匹配。
     """
 
     if not text:
@@ -334,15 +311,19 @@ def fetch_dev_articles(tag):
     for item in articles[:MAX_NEWS_PER_SOURCE]:
 
         article_id = item.get("id")
+
         title = clean_text(
             item.get("title", "")
         )
+
         description = clean_text(
             item.get("description", "")
         )
+
         link = normalize_url(
             item.get("url", "")
         )
+
         published_at = item.get(
             "published_at",
             "",
@@ -363,9 +344,6 @@ def fetch_dev_articles(tag):
             + description
         ).lower()
 
-        # 当前公众号定位明确以 Web 前端为主。
-        # 只保留能从标题/摘要中确认与前端相关的文章，
-        # 不再因为“AI”单独出现就把 AI-only 文章筛进来。
         if not contains_keyword(
             full_text,
             FRONTEND_KEYWORDS,
@@ -439,8 +417,6 @@ def fetch_dev_article_detail(article_id):
         or ""
     ).strip()
 
-    # 优先使用 DEV.to 返回的 Markdown 正文，
-    # 因为它比 description 包含更多原文信息。
     source_content = body_markdown
 
     if not source_content:
@@ -491,6 +467,7 @@ def fetch_dev_article_detail(article_id):
 # ============================================================
 
 def extract_image_from_html(content):
+
     if not content:
         return ""
 
@@ -792,7 +769,7 @@ def ai_select_news(news_list):
 
 1. 只能根据提供的标题、摘要、来源和链接判断。
 2. 不允许根据自己的知识补充新闻事实。
-3. 优先选择真正的 Web 前端技术内容，尤其是 Vue、TypeScript、JavaScript、React、CSS、Vite、Web 性能、前端工程化等。
+3. 优先选择真正的 Web 前端技术内容。
 4. AI 相关内容只有在与 Web 前端开发存在直接关系时才优先考虑。
 5. 排除 newsletter、weekly roundup、monthly roundup 等汇总文章。
 6. 不选择明显重复的内容。
@@ -871,6 +848,80 @@ def ai_select_news(news_list):
 
 
 # ============================================================
+# 清理代码块
+# ============================================================
+
+def clean_code_block(code):
+
+    if code is None:
+        return ""
+
+    code = str(code)
+
+    # 统一换行
+    code = code.replace(
+        "\r\n",
+        "\n",
+    ).replace(
+        "\r",
+        "\n",
+    )
+
+    # 去掉代码块两侧多余空行
+    code = code.strip()
+
+    # 如果 AI 又返回了 ``` 包裹，
+    # 这里去掉外层 Markdown 标记。
+    code = re.sub(
+        r"^```[a-zA-Z0-9_+#.-]*\s*\n?",
+        "",
+        code,
+    )
+
+    code = re.sub(
+        r"\n?```\s*$",
+        "",
+        code,
+    )
+
+    return code.strip()
+
+
+def clean_code_language(language):
+
+    if not language:
+        return "text"
+
+    language = str(
+        language
+    ).strip().lower()
+
+    language_map = {
+        "js": "javascript",
+        "jsx": "javascript",
+        "ts": "typescript",
+        "tsx": "typescript",
+        "vue": "vue",
+        "html": "html",
+        "css": "css",
+        "scss": "scss",
+        "sass": "sass",
+        "json": "json",
+        "bash": "bash",
+        "shell": "bash",
+        "sh": "bash",
+        "yml": "yaml",
+        "md": "markdown",
+        "py": "python",
+    }
+
+    return language_map.get(
+        language,
+        language,
+    )
+
+
+# ============================================================
 # AI 生成公众号文章
 # ============================================================
 
@@ -922,52 +973,134 @@ def ai_generate_article(news):
     }
 
     prompt = f"""
-你是一名中文科技公众号编辑。
+你是一名中文 Web 前端技术公众号编辑。
 
 请根据下面提供的唯一一篇 DEV.to 英文技术文章原文，
-写成一篇完整的中文微信公众号文章。
+将它忠实地重构成一篇完整的中文微信公众号技术文章。
 
 公众号名称：
 
 web前端开发之旅
 
-文章不是新闻列表，也不是资料汇总。
+这不是简单的新闻摘要。
 
-必须围绕这一篇文章，
-写成一篇完整、连贯、适合微信公众号阅读的文章。
+你需要把原文真正有价值的技术内容提取出来，
+让中文 Web 前端开发者能够理解文章讲了什么、
+为什么值得关注，以及具体怎么做。
 
-文章结构：
+============================================================
+一、文章结构
+============================================================
+
+文章必须包含：
 
 1. 一个有吸引力但不过度夸张的标题
 2. 开场导语
 3. 3～4 个正文小节
-4. 每个小节由自然段组成
-5. 最后有一个“写在最后”的总结
+4. 每个小节包含自然段
+5. 如果原文存在重要代码示例，应在相关小节中保留代码
+6. 如果原文存在真实案例、项目实践、API 使用场景、配置示例，
+   应在相关小节中尽可能保留
+7. 最后有一个“写在最后”的总结
 
-写作风格：
+============================================================
+二、最重要：不要把原文的技术价值删掉
+============================================================
 
-- 中文自然
-- 清晰
-- 技术感
-- 有解释性
-- 不要有明显 AI 腔
-- 不要堆砌新闻事实
-- 不要把文章写成新闻列表
-- 不要重复同一个观点
-- 段落之间要有自然过渡
-- 重点技术概念可以使用加粗 Markdown，例如 **React**
-- 不要使用表格
-- 不要使用 emoji
+这是一篇 Web 前端技术文章。
 
-最重要的事实约束：
+如果原文中出现以下内容，它们都属于重要信息：
 
-你只能使用下面提供的信息，尤其是 source_content 中的原文内容。
-不要把你自己的知识当成原文事实。
+- 实际案例
+- 项目实践
+- 代码示例
+- API 调用示例
+- 配置文件
+- JavaScript / TypeScript 示例
+- Vue / React 示例
+- HTML / CSS 示例
+- Vite / Webpack 配置
+- 浏览器 API 使用方式
+- 前后对比代码
+- 错误代码与修复代码
+- 性能测试或 benchmark
+- 实际使用场景
+
+改写时不能为了“简洁”而把这些内容全部删除。
+
+特别是：
+
+如果原文存在能够帮助读者理解核心技术的代码示例，
+必须优先保留至少 1 个最有代表性的代码示例。
+
+如果原文存在多个重要代码示例，
+可以选择 1～3 个最核心的代码示例。
+
+代码过长时，可以只保留核心部分，
+但必须保证代码仍然忠实于原文的技术含义。
+
+============================================================
+三、代码处理规则
+============================================================
+
+如果原文存在代码：
+
+1. 只能使用原文中真实存在的代码或代码片段。
+2. 不允许根据自己的知识凭空创造代码。
+3. 可以删除原文代码中与主题无关的部分。
+4. 可以适当整理缩进和格式。
+5. 可以轻微调整变量名，但不得改变代码的技术含义。
+6. 不允许为了让代码“看起来更完整”而添加原文没有的功能。
+7. 如果原文代码存在明显的省略部分，可以使用注释说明省略，
+   不要自行补全。
+8. 每个代码块必须说明语言类型，例如：
+   javascript、typescript、vue、html、css、json、bash 等。
+9. 代码块必须放到 JSON 的 code_blocks 中。
+10. 代码必须尽量放在与它对应的 section 中。
+
+============================================================
+四、真实案例处理规则
+============================================================
+
+如果原文有真实案例：
+
+必须尽可能保留。
+
+例如原文提到了：
+
+- 某个项目
+- 某种实际使用方式
+- 某个 API
+- 某个组件
+- 某个框架
+- 某个配置
+- 某个实际问题
+- 某个解决方案
+
+都可以作为文章正文的重要组成部分。
+
+可以压缩描述，
+但不能无理由删除。
+
+但是：
+
+原文没有的案例，绝对不能自己创造。
+
+============================================================
+五、事实约束
+============================================================
+
+你只能使用下面提供的信息，
+尤其是 source_content 中的原文内容。
+
+不要把你自己的 Web 前端知识当成原文事实。
 
 禁止：
 
 - 编造人物
 - 编造公司
+- 编造项目
+- 编造案例
 - 编造数字
 - 编造性能数据
 - 编造 benchmark
@@ -976,10 +1109,45 @@ web前端开发之旅
 - 编造专家观点
 - 编造用户反馈
 - 编造测试结果
+- 编造 API
+- 编造代码
+- 编造配置
 - 编造因果关系
-- 根据自己的知识补充原文没有提供的事实
 
 如果资料中没有某个信息，就不要写。
+
+============================================================
+六、事实与解释的区别
+============================================================
+
+你可以对原文内容进行中文解释，
+但是解释必须能够直接由原文支持。
+
+例如：
+
+原文展示了某段 JavaScript 代码，
+你可以解释这段代码“做了什么”。
+
+但是不能因为你知道某个 API 的其他能力，
+就自行加入原文没有提到的使用方式。
+
+============================================================
+七、文章风格
+============================================================
+
+- 中文自然
+- 清晰
+- 技术感
+- 有解释性
+- 适合 Web 前端开发者阅读
+- 不要明显 AI 腔
+- 不要写成新闻列表
+- 不要堆砌新闻事实
+- 不要重复同一个观点
+- 段落之间要有自然过渡
+- 重点技术概念可以使用加粗 Markdown，例如 **TypeScript**
+- 不要使用表格
+- 不要使用 emoji
 
 不要使用：
 
@@ -991,17 +1159,25 @@ web前端开发之旅
 
 除非这些内容能够直接从提供的事实中得到支持。
 
-文章必须忠于原文提供的信息。
+============================================================
+八、正文长度
+============================================================
 
-来源信息：
+不要为了追求短而过度压缩。
 
-{json.dumps(
-    fact_context,
-    ensure_ascii=False,
-    indent=2
-)}
+如果原文是一篇完整技术教程或实践文章，
+应保留足够的技术背景、案例和代码，
+让最终中文文章本身具有阅读价值。
 
-请严格返回 JSON，不要返回 Markdown 代码块：
+============================================================
+九、严格 JSON 输出
+============================================================
+
+必须严格返回 JSON。
+
+不要返回 Markdown 代码块。
+
+格式：
 
 {{
   "title": "文章标题",
@@ -1012,11 +1188,36 @@ web前端开发之旅
       "paragraphs": [
         "第一段",
         "第二段"
+      ],
+      "code_blocks": [
+        {{
+          "language": "javascript",
+          "caption": "这段代码用于做什么",
+          "code": "原文中的核心代码"
+        }}
       ]
     }}
   ],
   "ending": "写在最后的总结"
 }}
+
+注意：
+
+- code_blocks 可以为空数组 []
+- 没有代码时不要强行创造代码
+- 有代码时尽量保留核心代码
+- 最多保留 3 个最有价值的代码块
+- 不要把普通文字放进 code_blocks
+- 不要把代码放进 paragraphs
+- paragraphs 和 code_blocks 必须是数组
+
+来源信息：
+
+{json.dumps(
+    fact_context,
+    ensure_ascii=False,
+    indent=2
+)}
 """
 
     result = call_ai(
@@ -1026,7 +1227,7 @@ web前端开发之旅
                 "content": prompt,
             }
         ],
-        max_tokens=5000,
+        max_tokens=6000,
     )
 
     result = extract_json_from_ai(
@@ -1103,6 +1304,11 @@ web前端开发之旅
             [],
         )
 
+        code_blocks = section.get(
+            "code_blocks",
+            [],
+        )
+
         if not heading:
             continue
 
@@ -1124,11 +1330,60 @@ web前端开发之旅
                         paragraph
                     )
 
-        if cleaned_paragraphs:
+        cleaned_code_blocks = []
+
+        if isinstance(
+            code_blocks,
+            list,
+        ):
+
+            for code_block in code_blocks:
+
+                if not isinstance(
+                    code_block,
+                    dict,
+                ):
+                    continue
+
+                language = clean_code_language(
+                    code_block.get(
+                        "language",
+                        "text",
+                    )
+                )
+
+                caption = clean_text(
+                    code_block.get(
+                        "caption",
+                        "",
+                    )
+                )
+
+                code = clean_code_block(
+                    code_block.get(
+                        "code",
+                        "",
+                    )
+                )
+
+                if not code:
+                    continue
+
+                cleaned_code_blocks.append({
+                    "language": language,
+                    "caption": caption,
+                    "code": code,
+                })
+
+        if (
+            cleaned_paragraphs
+            or cleaned_code_blocks
+        ):
 
             cleaned_sections.append({
                 "heading": heading,
                 "paragraphs": cleaned_paragraphs,
+                "code_blocks": cleaned_code_blocks,
             })
 
     if not cleaned_sections:
@@ -1237,12 +1492,6 @@ def filter_news(news_list):
 # ============================================================
 
 def is_jpeg(data):
-    """
-    判断文件内容是否是真正的 JPEG。
-
-    不能只看 .jpg 后缀。
-    微信判断的是实际文件内容。
-    """
 
     if not data:
         return False
@@ -1281,10 +1530,6 @@ def download_cover(image_urls):
     print("=" * 60)
     print("开始准备公众号封面")
     print("=" * 60)
-
-    # --------------------------------------------------------
-    # 先检查仓库中原来的 cover.jpg
-    # --------------------------------------------------------
 
     existing_cover = None
 
@@ -1328,10 +1573,6 @@ def download_cover(image_urls):
 
             existing_cover = None
 
-    # --------------------------------------------------------
-    # 去重图片 URL
-    # --------------------------------------------------------
-
     urls = []
 
     for url in image_urls:
@@ -1351,10 +1592,6 @@ def download_cover(image_urls):
         f"{len(urls)} 个"
     )
 
-    # --------------------------------------------------------
-    # 逐个尝试
-    # --------------------------------------------------------
-
     for index, image_url in enumerate(
         urls,
         1,
@@ -1370,10 +1607,6 @@ def download_cover(image_urls):
 
         try:
 
-            # DEV.to 的 media2 图片代理经常会把
-            # format=auto 返回成 WebP。
-            # 微信封面这里最终必须使用真正的 JPEG，
-            # 因此优先请求 JPEG 格式。
             request_url = image_url
 
             if (
@@ -1447,14 +1680,6 @@ def download_cover(image_urls):
                 f"{content_type}"
             )
 
-            # ------------------------------------------------
-            # 关键：
-            # 微信封面最终必须是真正的 JPEG。
-            #
-            # 如果 DEV.to 的图片代理仍然返回 WebP，
-            # 就跳过当前地址，继续尝试其他候选图片。
-            # ------------------------------------------------
-
             if not is_jpeg(data):
 
                 print(
@@ -1462,11 +1687,6 @@ def download_cover(image_urls):
                 )
 
                 continue
-
-            # ------------------------------------------------
-            # 如果 Content-Type 明确说是非 JPEG，
-            # 同样跳过。
-            # ------------------------------------------------
 
             if content_type:
 
@@ -1485,10 +1705,6 @@ def download_cover(image_urls):
 
                     continue
 
-            # ------------------------------------------------
-            # 保存真正的 JPEG
-            # ------------------------------------------------
-
             with open(
                 COVER_FILE,
                 "wb",
@@ -1496,7 +1712,6 @@ def download_cover(image_urls):
 
                 f.write(data)
 
-            # 再验证一次
             with open(
                 COVER_FILE,
                 "rb",
@@ -1551,11 +1766,6 @@ def download_cover(image_urls):
                 str(e),
             )
 
-    # --------------------------------------------------------
-    # 所有来源图片都失败
-    # 使用仓库中已有的有效 JPEG
-    # --------------------------------------------------------
-
     if existing_cover is not None:
 
         with open(
@@ -1578,11 +1788,6 @@ def download_cover(image_urls):
         )
 
         return True
-
-    # --------------------------------------------------------
-    # 连备用封面都没有
-    # 直接失败。
-    # --------------------------------------------------------
 
     raise RuntimeError(
         "没有找到可用于微信公众号的 JPEG 封面图片，"
@@ -1609,7 +1814,6 @@ def collect_cover_urls(news):
             cover_image
         )
 
-    # DEV.to 可能有多个图片字段
     for key in [
         "social_image",
         "cover_image",
@@ -1778,8 +1982,6 @@ def main():
         "",
     )
 
-    # 如果列表接口没有提供封面，
-    # 则使用详情接口里的封面。
     if detail.get(
         "cover_image"
     ):
@@ -1852,6 +2054,52 @@ def main():
                 paragraph
             )
 
+        code_blocks = section.get(
+            "code_blocks",
+            [],
+        )
+
+        for code_index, code_block in enumerate(
+            code_blocks,
+            1,
+        ):
+
+            print("")
+
+            print(
+                f"[代码示例 {code_index}]"
+            )
+
+            if code_block.get(
+                "caption",
+                "",
+            ):
+
+                print(
+                    "说明：",
+                    code_block.get(
+                        "caption",
+                        "",
+                    )
+                )
+
+            print(
+                "语言：",
+                code_block.get(
+                    "language",
+                    "text",
+                )
+            )
+
+            print("")
+
+            print(
+                code_block.get(
+                    "code",
+                    "",
+                )
+            )
+
     print("")
     print("写在最后：")
     print(
@@ -1922,6 +2170,21 @@ def main():
     print(
         f"正文小节："
         f"{len(article['sections'])}"
+    )
+
+    total_code_blocks = sum(
+        len(
+            section.get(
+                "code_blocks",
+                [],
+            )
+        )
+        for section in article["sections"]
+    )
+
+    print(
+        f"代码示例："
+        f"{total_code_blocks}"
     )
 
     print("")
