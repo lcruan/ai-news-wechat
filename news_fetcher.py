@@ -31,28 +31,26 @@ COVER_FILE = "cover.jpg"
 # 新闻源
 # ============================================================
 
-MEDIUM_FEEDS = [
-    "https://medium.com/feed/tag/frontend-development",
-    "https://medium.com/feed/tag/web-development",
-    "https://medium.com/feed/tag/artificial-intelligence",
-]
-
+# 当前阶段只使用 DEV.to。
+# 公众号定位以 Web 前端技术为主，重点关注 Vue、TypeScript、JavaScript、React、CSS、Vite、Web 性能等。
 DEV_API_URL = "https://dev.to/api/articles"
 
 DEV_TAGS = [
     "frontend",
     "webdev",
     "javascript",
-    "react",
+    "typescript",
     "vue",
-    "ai",
+    "react",
+    "css",
+    "vite",
 ]
 
 MAX_NEWS_PER_SOURCE = 20
 
 MAX_SCREENING_SUMMARY_CHARS = 800
 MAX_FACT_SUMMARY_CHARS = 2000
-MAX_ARTICLE_SUMMARY_CHARS = 2500
+MAX_SOURCE_ARTICLE_CHARS = 14000
 MAX_SCREENING_CONTEXT_CHARS = 30000
 
 
@@ -71,38 +69,19 @@ FRONTEND_KEYWORDS = [
     "vue",
     "angular",
     "next.js",
+    "nextjs",
     "nuxt",
     "css",
     "html",
     "browser",
     "web performance",
+    "webperf",
     "webpack",
     "vite",
     "node.js",
     "nodejs",
-]
-
-AI_KEYWORDS = [
-    "artificial intelligence",
-    "generative ai",
-    "genai",
-    "large language model",
-    "llm",
-    "machine learning",
-    "deep learning",
-    "ai model",
-    "ai coding",
-    "coding agent",
-    "ai agent",
-    "agentic",
-    "openai",
-    "claude",
-    "gemini",
-    "deepseek",
-    "qwen",
-    "copilot",
-    "cursor",
-    "mcp",
+    "frontend engineering",
+    "web engineering",
 ]
 
 ROUNDUP_KEYWORDS = [
@@ -119,176 +98,6 @@ ROUNDUP_KEYWORDS = [
 # ============================================================
 # 通用工具
 # ============================================================
-
-def clean_text(value):
-    if not value:
-        return ""
-
-    value = html.unescape(value)
-    value = re.sub(r"<[^>]+>", " ", value)
-    value = re.sub(r"\s+", " ", value)
-
-    return value.strip()
-
-
-def truncate_text(value, max_chars):
-    value = clean_text(value)
-
-    if len(value) <= max_chars:
-        return value
-
-    return value[:max_chars].rstrip() + "..."
-
-
-def normalize_url(url):
-    if not url:
-        return ""
-
-    return html.unescape(url).strip()
-
-
-def contains_keyword(text, keywords):
-    text = (text or "").lower()
-
-    return any(keyword.lower() in text for keyword in keywords)
-
-
-# ============================================================
-# Medium RSS
-# ============================================================
-
-def get_xml_text(element, tag):
-    child = element.find(tag)
-
-    if child is None:
-        return ""
-
-    return "".join(child.itertext()).strip()
-
-
-def get_atom_link(entry):
-    for link in entry.findall("{http://www.w3.org/2005/Atom}link"):
-        href = link.attrib.get("href")
-
-        if href:
-            return href
-
-    return ""
-
-
-def get_atom_content(entry):
-    content = entry.find("{http://www.w3.org/2005/Atom}content")
-
-    if content is not None:
-        return "".join(
-            ET.tostring(child, encoding="unicode")
-            for child in list(content)
-        )
-
-    summary = entry.find("{http://www.w3.org/2005/Atom}summary")
-
-    if summary is not None:
-        return "".join(summary.itertext())
-
-    return ""
-
-
-def fetch_url(url, timeout=REQUEST_TIMEOUT, headers=None):
-    request_headers = {
-        "User-Agent": (
-            "Mozilla/5.0 "
-            "(X11; Linux x86_64) "
-            "AppleWebKit/537.36 "
-            "Chrome/120 Safari/537.36"
-        )
-    }
-
-    if headers:
-        request_headers.update(headers)
-
-    request = urllib.request.Request(
-        url,
-        headers=request_headers,
-        method="GET",
-    )
-
-    with urllib.request.urlopen(
-        request,
-        timeout=timeout,
-    ) as response:
-        return response.read(), response.headers
-
-
-def fetch_medium_feed(feed_url):
-    print("")
-    print("=" * 60)
-    print("抓取 Medium：")
-    print(feed_url)
-    print("=" * 60)
-
-    data, _ = fetch_url(feed_url)
-
-    root = ET.fromstring(data)
-
-    entries = root.findall("{http://www.w3.org/2005/Atom}entry")
-
-    results = []
-
-    for entry in entries[:MAX_NEWS_PER_SOURCE]:
-
-        title = get_xml_text(
-            entry,
-            "{http://www.w3.org/2005/Atom}title",
-        )
-
-        link = get_atom_link(entry)
-
-        published = get_xml_text(
-            entry,
-            "{http://www.w3.org/2005/Atom}published",
-        )
-
-        updated = get_xml_text(
-            entry,
-            "{http://www.w3.org/2005/Atom}updated",
-        )
-
-        summary = get_atom_content(entry)
-
-        title_clean = clean_text(title)
-        summary_clean = clean_text(summary)
-
-        if not title_clean or not link:
-            continue
-
-        full_text = (
-            title_clean
-            + " "
-            + summary_clean
-        ).lower()
-
-        if not (
-            contains_keyword(full_text, FRONTEND_KEYWORDS)
-            or contains_keyword(full_text, AI_KEYWORDS)
-        ):
-            continue
-
-        results.append({
-            "source": "Medium",
-            "title": title_clean,
-            "summary": truncate_text(
-                summary_clean,
-                MAX_FACT_SUMMARY_CHARS,
-            ),
-            "link": normalize_url(link),
-            "pubDate": published or updated,
-            "cover_image": extract_image_from_html(summary),
-        })
-
-    print(f"Medium 有效文章：{len(results)}")
-
-    return results
-
 
 # ============================================================
 # DEV.to
@@ -316,6 +125,7 @@ def fetch_dev_articles(tag):
 
     for item in articles[:MAX_NEWS_PER_SOURCE]:
 
+        article_id = item.get("id")
         title = clean_text(item.get("title", ""))
         description = clean_text(item.get("description", ""))
         link = normalize_url(item.get("url", ""))
@@ -327,7 +137,7 @@ def fetch_dev_articles(tag):
             or ""
         )
 
-        if not title or not link:
+        if not article_id or not title or not link:
             continue
 
         full_text = (
@@ -336,14 +146,18 @@ def fetch_dev_articles(tag):
             + description
         ).lower()
 
-        if not (
-            contains_keyword(full_text, FRONTEND_KEYWORDS)
-            or contains_keyword(full_text, AI_KEYWORDS)
+        # 当前公众号定位明确以 Web 前端为主。
+        # 只保留能从标题/摘要中确认与前端相关的文章，
+        # 不再因为“AI”单独出现就把 AI-only 文章筛进来。
+        if not contains_keyword(
+            full_text,
+            FRONTEND_KEYWORDS,
         ):
             continue
 
         results.append({
             "source": "DEV.to",
+            "id": article_id,
             "title": title,
             "summary": truncate_text(
                 description,
@@ -352,11 +166,87 @@ def fetch_dev_articles(tag):
             "link": link,
             "pubDate": published_at,
             "cover_image": normalize_url(cover_image),
+            "social_image": normalize_url(
+                item.get("social_image", "")
+            ),
         })
 
     print(f"DEV.to {tag} 有效文章：{len(results)}")
 
     return results
+
+
+# ============================================================
+# 获取 DEV.to 单篇文章完整正文
+# ============================================================
+
+def fetch_dev_article_detail(article_id):
+
+    if not article_id:
+        raise RuntimeError(
+            "DEV.to 文章缺少 id，无法获取完整正文"
+        )
+
+    url = f"{DEV_API_URL}/{article_id}"
+
+    print("")
+    print("=" * 60)
+    print("获取 DEV.to 入选文章完整正文")
+    print(f"文章 ID：{article_id}")
+    print("=" * 60)
+
+    data, _ = fetch_url(url)
+    article = json.loads(data.decode("utf-8"))
+
+    body_markdown = str(
+        article.get("body_markdown", "")
+        or ""
+    ).strip()
+
+    body_html = str(
+        article.get("body_html", "")
+        or ""
+    ).strip()
+
+    # 优先使用 DEV.to 返回的 Markdown 正文，
+    # 因为它比 description 包含更多原文信息。
+    source_content = body_markdown
+
+    if not source_content:
+        source_content = clean_text(body_html)
+
+    source_content = source_content.strip()
+
+    if not source_content:
+        raise RuntimeError(
+            "DEV.to 入选文章没有可用的正文内容"
+        )
+
+    cover_image = normalize_url(
+        article.get("cover_image", "")
+        or article.get("social_image", "")
+        or ""
+    )
+
+    if not cover_image:
+        cover_image = extract_image_from_html(
+            body_html
+        )
+
+    print(
+        f"DEV.to 完整正文长度：{len(source_content)} 字符"
+    )
+
+    return {
+        "source_content": truncate_text(
+            source_content,
+            MAX_SOURCE_ARTICLE_CHARS,
+        ),
+        "cover_image": cover_image,
+        "social_image": normalize_url(
+            article.get("social_image", "")
+        ),
+    }
 
 
 # ============================================================
@@ -598,34 +488,33 @@ def ai_select_news(news_list):
     prompt = f"""
 你是一名技术新闻编辑。
 
-下面是今天从 Medium 和 DEV.to 获取的公开文章。
+下面是今天从 DEV.to 获取的公开文章。
 
 请从中筛选出一篇最适合“web前端开发之旅”公众号今天发布的文章。
 
-公众号主要关注：
+公众号主要关注 Web 前端技术，重点包括：
 
-- Web 前端
-- JavaScript
+- Vue / Vue 生态
 - TypeScript
-- Vue
-- React
-- Web 工程化
-- 浏览器
-- Web 性能
-- AI + Web
-- AI 编程
-- AI Agent
-- 大模型应用
+- JavaScript
+- React / Next.js
+- CSS / HTML
+- Vite / Webpack / 前端工程化
+- 浏览器与 Web 性能
+- Node.js 与 Web 开发
+- AI + Web、AI 编程等与前端直接相关的内容
 
 要求：
 
 1. 只能根据提供的标题、摘要、来源和链接判断。
 2. 不允许根据自己的知识补充新闻事实。
-3. 优先选择信息明确、技术价值较高、适合写成完整中文技术文章的内容。
-4. 排除 newsletter、weekly roundup、monthly roundup 等汇总文章。
-5. 不选择明显重复的内容。
-6. 不要选择明显只是推广、广告或招聘的内容。
-7. 最终只能选择 1 篇。
+3. 优先选择真正的 Web 前端技术内容，尤其是 Vue、TypeScript、JavaScript、React、CSS、Vite、Web 性能、前端工程化等。
+4. AI 相关内容只有在与 Web 前端开发存在直接关系时才优先考虑。
+5. 排除 newsletter、weekly roundup、monthly roundup 等汇总文章。
+6. 不选择明显重复的内容。
+7. 不要选择明显只是推广、广告或招聘的内容。
+8. 优先选择原文信息足够丰富、能够写成一篇完整中文技术文章的内容。
+9. 最终只能选择 1 篇。
 
 返回严格 JSON：
 
@@ -690,6 +579,7 @@ def ai_generate_article(news):
     source = news.get("source", "")
     title = news.get("title", "")
     summary = news.get("summary", "")
+    source_content = news.get("source_content", "")
     link = news.get("link", "")
     pub_date = news.get("pubDate", "")
 
@@ -698,7 +588,11 @@ def ai_generate_article(news):
         "title": title,
         "summary": truncate_text(
             summary,
-            MAX_ARTICLE_SUMMARY_CHARS,
+            MAX_SCREENING_SUMMARY_CHARS,
+        ),
+        "source_content": truncate_text(
+            source_content,
+            MAX_SOURCE_ARTICLE_CHARS,
         ),
         "original_link": link,
         "pub_date": pub_date,
@@ -707,7 +601,7 @@ def ai_generate_article(news):
     prompt = f"""
 你是一名中文科技公众号编辑。
 
-请根据下面提供的唯一一篇英文技术文章信息，
+请根据下面提供的唯一一篇 DEV.to 英文技术文章原文，
 写成一篇完整的中文微信公众号文章。
 
 公众号名称：
@@ -744,7 +638,8 @@ web前端开发之旅
 
 最重要的事实约束：
 
-你只能使用下面提供的信息。
+你只能使用下面提供的信息，尤其是 source_content 中的原文内容。
+不要把你自己的知识当成原文事实。
 
 禁止：
 
@@ -1337,7 +1232,7 @@ def main():
 
     print("")
     print("=" * 70)
-    print("0元 AI 新闻公众号自动化")
+    print("0元 Web 前端技术公众号自动化")
     print("=" * 70)
 
     # --------------------------------------------------------
@@ -1351,34 +1246,11 @@ def main():
         )
 
     # --------------------------------------------------------
-    # 2. 抓取 Medium
+    # 2. 只抓取 DEV.to
     # --------------------------------------------------------
 
     all_news = []
 
-    for feed_url in MEDIUM_FEEDS:
-
-        try:
-
-            news = fetch_medium_feed(
-                feed_url
-            )
-
-            all_news.extend(news)
-
-        except Exception as e:
-
-            print("")
-            print(
-                "Medium 抓取失败：",
-                feed_url,
-            )
-
-            print(str(e))
-
-    # --------------------------------------------------------
-    # 3. 抓取 DEV.to
-    # --------------------------------------------------------
 
     for tag in DEV_TAGS:
 
@@ -1407,7 +1279,7 @@ def main():
     print("=" * 60)
 
     # --------------------------------------------------------
-    # 4. 去重
+    # 3. 去重
     # --------------------------------------------------------
 
     all_news = deduplicate_news(
@@ -1419,7 +1291,7 @@ def main():
     )
 
     # --------------------------------------------------------
-    # 5. 关键词过滤
+    # 4. 关键词过滤
     # --------------------------------------------------------
 
     all_news = filter_news(
@@ -1437,7 +1309,7 @@ def main():
         )
 
     # --------------------------------------------------------
-    # 6. AI 筛选
+    # 5. AI 筛选
     # --------------------------------------------------------
 
     selected_news = ai_select_news(
@@ -1482,7 +1354,31 @@ def main():
     )
 
     # --------------------------------------------------------
-    # 7. 生成完整公众号文章
+    # 7. 获取入选 DEV.to 文章的完整正文
+    # --------------------------------------------------------
+
+    detail = fetch_dev_article_detail(
+        selected_news.get("id")
+    )
+
+    selected_news["source_content"] = detail.get(
+        "source_content",
+        "",
+    )
+
+    # 如果列表接口没有提供封面，则使用详情接口里的封面。
+    if detail.get("cover_image"):
+        selected_news["cover_image"] = detail.get(
+            "cover_image"
+        )
+
+    if detail.get("social_image"):
+        selected_news["social_image"] = detail.get(
+            "social_image"
+        )
+
+    # --------------------------------------------------------
+    # 8. 生成完整公众号文章
     # --------------------------------------------------------
 
     article = ai_generate_article(
@@ -1490,7 +1386,7 @@ def main():
     )
 
     # --------------------------------------------------------
-    # 8. 打印完整公众号文章
+    # 9. 打印完整公众号文章
     # --------------------------------------------------------
 
     print("")
@@ -1526,7 +1422,7 @@ def main():
     print("=" * 60)
 
     # --------------------------------------------------------
-    # 9. 收集封面候选
+    # 10. 收集封面候选
     # --------------------------------------------------------
 
     cover_urls = collect_cover_urls(
@@ -1534,7 +1430,7 @@ def main():
     )
 
     # --------------------------------------------------------
-    # 10. 下载真正的 JPEG 封面
+    # 11. 下载真正的 JPEG 封面
     # --------------------------------------------------------
 
     download_cover(
@@ -1542,7 +1438,7 @@ def main():
     )
 
     # --------------------------------------------------------
-    # 11. 保存 article.json
+    # 12. 保存 article.json
     # --------------------------------------------------------
 
     with open(
