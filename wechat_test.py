@@ -469,6 +469,655 @@ def clean_code_language(language):
 
 
 # ============================================================
+# 静态代码语法高亮
+#
+# 注意：
+# 这里不依赖 JavaScript / highlight.js / Prism.js。
+#
+# Python 在生成微信公众号 HTML 时，
+# 直接把代码转换成带颜色的 span。
+#
+# 因此微信公众号打开文章时，
+# 不需要额外加载任何 JS。
+# ============================================================
+
+def highlight_code(
+    code,
+    language
+):
+
+    code = str(
+        code or ""
+    )
+
+    if not code:
+        return ""
+
+    language_lower = str(
+        language or ""
+    ).strip().lower()
+
+    # --------------------------------------------------------
+    # 颜色方案
+    #
+    # 整体保持现代深色编辑器风格。
+    # --------------------------------------------------------
+
+    COLOR_COMMENT = "#7f848e"
+    COLOR_STRING = "#98c379"
+    COLOR_KEYWORD = "#c678dd"
+    COLOR_NUMBER = "#d19a66"
+    COLOR_FUNCTION = "#61afef"
+    COLOR_TAG = "#e06c75"
+    COLOR_ATTRIBUTE = "#d19a66"
+    COLOR_BOOLEAN = "#56b6c2"
+    COLOR_OPERATOR = "#56b6c2"
+    COLOR_DEFAULT = "#abb2bf"
+
+    # --------------------------------------------------------
+    # 先进行 HTML 转义。
+    #
+    # 后续生成的 span 标签是我们自己添加的。
+    # --------------------------------------------------------
+
+    escaped = html.escape(
+        code,
+        quote=False
+    )
+
+    # --------------------------------------------------------
+    # 使用占位符保护：
+    #
+    # 1. 注释
+    # 2. 字符串
+    # 3. HTML 标签
+    #
+    # 避免后续关键词高亮把这些内容再次处理。
+    # --------------------------------------------------------
+
+    protected = []
+
+    def protect(value, color):
+
+        index = len(protected)
+
+        placeholder = (
+            f"___CODE_TOKEN_{index}___"
+        )
+
+        protected.append(
+            (
+                placeholder,
+                f'<span style="color:{color};">'
+                f'{value}'
+                f'</span>'
+            )
+        )
+
+        return placeholder
+
+    # --------------------------------------------------------
+    # HTML / Vue 标签
+    #
+    # <template>
+    # <div class="app">
+    # </div>
+    #
+    # Vue 文件优先按 HTML 标签处理。
+    # --------------------------------------------------------
+
+    if language_lower in (
+        "html",
+        "htm",
+        "xml",
+        "vue"
+    ):
+
+        tag_pattern = re.compile(
+            r"&lt;/?[A-Za-z][^&]*?&gt;"
+        )
+
+        def replace_tag(match):
+
+            tag = match.group(0)
+
+            # 标签名
+            tag = re.sub(
+                r"(&lt;/?)([A-Za-z][\w:-]*)",
+                rf'\1<span style="color:{COLOR_TAG};">\2</span>',
+                tag
+            )
+
+            # 属性名
+            tag = re.sub(
+                r"(\s)([A-Za-z_:][\w:.-]*)(=)",
+                rf'\1<span style="color:{COLOR_ATTRIBUTE};">\2</span>\3',
+                tag
+            )
+
+            return protect(
+                tag,
+                COLOR_DEFAULT
+            )
+
+        escaped = tag_pattern.sub(
+            replace_tag,
+            escaped
+        )
+
+    # --------------------------------------------------------
+    # 注释
+    #
+    # JavaScript / TypeScript / Java / C / C++ / Go / Rust
+    # Python / Bash / CSS / SQL 等常见注释。
+    #
+    # 注意：
+    # 对 HTML/Vue，标签保护后再处理注释。
+    # --------------------------------------------------------
+
+    comment_patterns = []
+
+    if language_lower in (
+        "python",
+        "py",
+        "bash",
+        "shell",
+        "sh"
+    ):
+        comment_patterns.append(
+            r"(?<!\\)#.*?$"
+        )
+
+    elif language_lower in (
+        "sql",
+    ):
+        comment_patterns.extend([
+            r"--.*?$",
+            r"/\*[\s\S]*?\*/"
+        ])
+
+    elif language_lower in (
+        "html",
+        "htm",
+        "xml",
+        "vue"
+    ):
+        comment_patterns.append(
+            r"&lt;!--[\s\S]*?--&gt;"
+        )
+
+    else:
+        comment_patterns.extend([
+            r"//.*?$",
+            r"/\*[\s\S]*?\*/"
+        ])
+
+    for pattern in comment_patterns:
+
+        escaped = re.sub(
+            pattern,
+            lambda m: protect(
+                m.group(0),
+                COLOR_COMMENT
+            ),
+            escaped,
+            flags=re.MULTILINE
+        )
+
+    # --------------------------------------------------------
+    # 字符串
+    #
+    # 支持：
+    # "xxx"
+    # 'xxx'
+    # `xxx`
+    #
+    # 对 HTML 已经保护的标签不会再进入这里。
+    # --------------------------------------------------------
+
+    string_pattern = re.compile(
+        r"""
+        (?:
+            "(?:\\.|[^"\\])*"
+            |
+            '(?:\\.|[^'\\])*'
+            |
+            `(?:\\.|[^`\\])*`
+        )
+        """,
+        re.VERBOSE
+    )
+
+    escaped = string_pattern.sub(
+        lambda m: protect(
+            m.group(0),
+            COLOR_STRING
+        ),
+        escaped
+    )
+
+    # --------------------------------------------------------
+    # 数字
+    #
+    # 例如：
+    # 100
+    # 3.14
+    # 0xff
+    # --------------------------------------------------------
+
+    escaped = re.sub(
+        r"\b(?:0x[0-9a-fA-F]+|\d+(?:\.\d+)?)\b",
+        lambda m: (
+            f'<span style="color:{COLOR_NUMBER};">'
+            f'{m.group(0)}'
+            f'</span>'
+        ),
+        escaped
+    )
+
+    # --------------------------------------------------------
+    # Boolean / null / undefined
+    # --------------------------------------------------------
+
+    escaped = re.sub(
+        r"\b(?:true|false|null|undefined|None|True|False)\b",
+        lambda m: (
+            f'<span style="color:{COLOR_BOOLEAN};">'
+            f'{m.group(0)}'
+            f'</span>'
+        ),
+        escaped
+    )
+
+    # --------------------------------------------------------
+    # 关键字
+    #
+    # 根据语言选择不同关键字。
+    # --------------------------------------------------------
+
+    keyword_sets = {
+
+        "javascript": {
+            "const", "let", "var",
+            "function", "return",
+            "if", "else", "for", "while",
+            "do", "switch", "case", "break",
+            "continue", "new", "class",
+            "extends", "import", "from",
+            "export", "default",
+            "async", "await",
+            "try", "catch", "finally",
+            "throw", "typeof",
+            "instanceof", "in", "of",
+            "this", "super",
+            "yield", "delete"
+        },
+
+        "typescript": {
+            "const", "let", "var",
+            "function", "return",
+            "if", "else", "for", "while",
+            "do", "switch", "case", "break",
+            "continue", "new", "class",
+            "extends", "implements",
+            "interface", "type",
+            "public", "private",
+            "protected", "readonly",
+            "import", "from",
+            "export", "default",
+            "async", "await",
+            "try", "catch", "finally",
+            "throw", "typeof",
+            "instanceof", "in", "of",
+            "this", "super",
+            "as", "keyof",
+            "namespace", "declare"
+        },
+
+        "jsx": {
+            "const", "let", "var",
+            "function", "return",
+            "if", "else", "for",
+            "while", "new", "class",
+            "extends", "import",
+            "from", "export",
+            "default", "async",
+            "await", "this"
+        },
+
+        "tsx": {
+            "const", "let", "var",
+            "function", "return",
+            "if", "else", "for",
+            "while", "new", "class",
+            "extends", "import",
+            "from", "export",
+            "default", "async",
+            "await", "this",
+            "interface", "type",
+            "implements", "public",
+            "private", "readonly"
+        },
+
+        "python": {
+            "def", "return",
+            "if", "elif", "else",
+            "for", "while", "in",
+            "import", "from", "as",
+            "class", "try", "except",
+            "finally", "raise",
+            "with", "lambda",
+            "yield", "async",
+            "await", "pass",
+            "break", "continue",
+            "global", "nonlocal",
+            "is", "not", "and", "or"
+        },
+
+        "java": {
+            "public", "private",
+            "protected", "class",
+            "interface", "extends",
+            "implements", "static",
+            "final", "void",
+            "int", "long", "float",
+            "double", "boolean",
+            "char", "new",
+            "return", "if", "else",
+            "for", "while", "do",
+            "switch", "case",
+            "break", "continue",
+            "try", "catch",
+            "finally", "throw",
+            "throws", "import",
+            "package", "this",
+            "super"
+        },
+
+        "c": {
+            "int", "char", "float",
+            "double", "void",
+            "long", "short",
+            "unsigned", "signed",
+            "struct", "typedef",
+            "const", "static",
+            "extern", "return",
+            "if", "else", "for",
+            "while", "do",
+            "switch", "case",
+            "break", "continue",
+            "sizeof", "include"
+        },
+
+        "cpp": {
+            "int", "char", "float",
+            "double", "void",
+            "long", "short",
+            "unsigned", "signed",
+            "struct", "class",
+            "public", "private",
+            "protected", "template",
+            "typename", "const",
+            "static", "virtual",
+            "override", "namespace",
+            "using", "return",
+            "if", "else", "for",
+            "while", "do",
+            "switch", "case",
+            "break", "continue",
+            "new", "delete",
+            "nullptr", "auto"
+        },
+
+        "go": {
+            "package", "import",
+            "func", "return",
+            "var", "const",
+            "type", "struct",
+            "interface", "if", "else",
+            "for", "range",
+            "switch", "case",
+            "break", "continue",
+            "go", "defer",
+            "map", "chan",
+            "select"
+        },
+
+        "rust": {
+            "fn", "let", "mut",
+            "const", "struct",
+            "enum", "impl", "trait",
+            "pub", "use", "mod",
+            "match", "if", "else",
+            "for", "while", "loop",
+            "return", "self",
+            "Self", "async", "await",
+            "move", "ref", "where"
+        },
+
+        "php": {
+            "function", "return",
+            "class", "public",
+            "private", "protected",
+            "static", "extends",
+            "implements", "new",
+            "if", "else", "elseif",
+            "for", "foreach",
+            "while", "do",
+            "switch", "case",
+            "break", "continue",
+            "try", "catch",
+            "throw", "namespace",
+            "use"
+        },
+
+        "sql": {
+            "SELECT", "FROM",
+            "WHERE", "INSERT",
+            "INTO", "VALUES",
+            "UPDATE", "SET",
+            "DELETE", "CREATE",
+            "TABLE", "ALTER",
+            "DROP", "JOIN",
+            "LEFT", "RIGHT",
+            "INNER", "OUTER",
+            "ON", "AS",
+            "AND", "OR",
+            "NOT", "NULL",
+            "ORDER", "BY",
+            "GROUP", "HAVING",
+            "LIMIT", "OFFSET"
+        },
+
+        "bash": {
+            "if", "then", "else",
+            "elif", "fi", "for",
+            "in", "do", "done",
+            "case", "esac",
+            "function", "while",
+            "until", "select"
+        },
+
+        "shell": {
+            "if", "then", "else",
+            "elif", "fi", "for",
+            "in", "do", "done",
+            "case", "esac",
+            "function", "while",
+            "until", "select"
+        }
+    }
+
+    # Vue / HTML 本身不需要普通语言关键字高亮
+    # 但 Vue 中的 script 代码可能仍然会有 JS。
+    keyword_set = keyword_sets.get(
+        language_lower,
+        set()
+    )
+
+    # JavaScript 别名
+    if language_lower in (
+        "js",
+    ):
+        keyword_set = keyword_sets["javascript"]
+
+    if language_lower in (
+        "ts",
+    ):
+        keyword_set = keyword_sets["typescript"]
+
+    if language_lower in (
+        "py",
+    ):
+        keyword_set = keyword_sets["python"]
+
+    if language_lower in (
+        "sh",
+    ):
+        keyword_set = keyword_sets["shell"]
+
+    # --------------------------------------------------------
+    # 关键词高亮
+    # --------------------------------------------------------
+
+    if keyword_set:
+
+        # SQL 大小写不敏感
+        if language_lower == "sql":
+
+            keyword_pattern = (
+                r"\b(?:"
+                + "|".join(
+                    re.escape(word)
+                    for word in sorted(
+                        keyword_set,
+                        key=len,
+                        reverse=True
+                    )
+                )
+                + r")\b"
+            )
+
+            escaped = re.sub(
+                keyword_pattern,
+                lambda m: (
+                    f'<span style="color:{COLOR_KEYWORD};">'
+                    f'{m.group(0)}'
+                    f'</span>'
+                ),
+                escaped,
+                flags=re.IGNORECASE
+            )
+
+        else:
+
+            keyword_pattern = (
+                r"\b(?:"
+                + "|".join(
+                    re.escape(word)
+                    for word in sorted(
+                        keyword_set,
+                        key=len,
+                        reverse=True
+                    )
+                )
+                + r")\b"
+            )
+
+            escaped = re.sub(
+                keyword_pattern,
+                lambda m: (
+                    f'<span style="color:{COLOR_KEYWORD};">'
+                    f'{m.group(0)}'
+                    f'</span>'
+                ),
+                escaped
+            )
+
+    # --------------------------------------------------------
+    # 函数调用
+    #
+    # console.log(...)
+    # createApp(...)
+    # fetch(...)
+    #
+    # 只给函数名着色，不改变代码结构。
+    # --------------------------------------------------------
+
+    escaped = re.sub(
+        r"\b([A-Za-z_$][\w$]*)"
+        r"(?=\s*\()",
+        lambda m: (
+            f'<span style="color:{COLOR_FUNCTION};">'
+            f'{m.group(1)}'
+            f'</span>'
+        ),
+        escaped
+    )
+
+    # --------------------------------------------------------
+    # CSS 属性
+    #
+    # color: red;
+    # display: flex;
+    #
+    # HTML 中也可能出现 style 内容，
+    # 这里仅针对 CSS 语言。
+    # --------------------------------------------------------
+
+    if language_lower in (
+        "css",
+        "scss",
+        "sass",
+        "less"
+    ):
+
+        escaped = re.sub(
+            r"([A-Za-z-]+)(\s*:)",
+            lambda m: (
+                f'<span style="color:{COLOR_FUNCTION};">'
+                f'{m.group(1)}'
+                f'</span>'
+                f'{m.group(2)}'
+            ),
+            escaped
+        )
+
+    # --------------------------------------------------------
+    # 操作符
+    #
+    # => === !== == != && || ++ --
+    # --------------------------------------------------------
+
+    escaped = re.sub(
+        r"(===|!==|=>|==|!=|<=|>=|&&|\|\||\+\+|--)",
+        lambda m: (
+            f'<span style="color:{COLOR_OPERATOR};">'
+            f'{m.group(0)}'
+            f'</span>'
+        ),
+        escaped
+    )
+
+    # --------------------------------------------------------
+    # 恢复被保护的内容
+    #
+    # 必须倒序恢复，避免一个 token 中包含另一个 token。
+    # --------------------------------------------------------
+
+    for placeholder, replacement in reversed(
+        protected
+    ):
+
+        escaped = escaped.replace(
+            placeholder,
+            replacement
+        )
+
+    return escaped
+
+
+# ============================================================
 # 代码块
 #
 # 固定使用类似现代代码编辑器的深色样式：
@@ -483,6 +1132,10 @@ def clean_code_language(language):
 # 样式由 Python 固定控制。
 # AI 只提供：
 # language / caption / code
+#
+# 新增：
+# 静态语法高亮。
+# 不依赖微信端 JS。
 # ============================================================
 
 def render_code_block(code_block):
@@ -523,20 +1176,16 @@ def render_code_block(code_block):
     ).strip()
 
     # --------------------------------------------------------
-    # 代码必须 HTML 转义
+    # 代码静态语法高亮
     #
-    # 否则：
-    #
-    # <div>
-    # <script>
-    # </div>
-    #
-    # 这类代码会被微信当成 HTML。
+    # 注意：
+    # highlight_code() 内部会负责 HTML 转义。
+    # 不要在这里再次 escape。
     # --------------------------------------------------------
 
-    escaped_code = html.escape(
+    highlighted_code = highlight_code(
         code,
-        quote=False
+        language
     )
 
     caption_html = ""
@@ -680,7 +1329,7 @@ def render_code_block(code_block):
             font-size:13px;
             line-height:1.7em;
             white-space:pre;
-        ">{escaped_code}</code></pre>
+        ">{highlighted_code}</code></pre>
 
     </section>
 
