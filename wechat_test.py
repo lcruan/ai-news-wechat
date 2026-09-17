@@ -397,6 +397,298 @@ def render_paragraph(text):
 
 
 # ============================================================
+# 代码语言名称
+#
+# 将 AI 返回的语言名称统一成公众号中显示的名称。
+# ============================================================
+
+def clean_code_language(language):
+
+    language = str(
+        language or ""
+    ).strip().lower()
+
+    language_map = {
+        "js": "JavaScript",
+        "javascript": "JavaScript",
+
+        "ts": "TypeScript",
+        "typescript": "TypeScript",
+
+        "jsx": "JSX",
+        "tsx": "TSX",
+
+        "vue": "Vue",
+
+        "html": "HTML",
+        "htm": "HTML",
+
+        "css": "CSS",
+        "scss": "SCSS",
+        "sass": "Sass",
+        "less": "Less",
+
+        "json": "JSON",
+
+        "xml": "XML",
+
+        "bash": "Bash",
+        "shell": "Shell",
+        "sh": "Shell",
+
+        "python": "Python",
+        "py": "Python",
+
+        "java": "Java",
+
+        "c": "C",
+        "cpp": "C++",
+        "c++": "C++",
+
+        "sql": "SQL",
+
+        "go": "Go",
+
+        "rust": "Rust",
+
+        "php": "PHP",
+
+        "text": "Text",
+        "txt": "Text",
+        "plaintext": "Text",
+        "plain": "Text",
+    }
+
+    if language in language_map:
+        return language_map[language]
+
+    if not language:
+        return "Code"
+
+    return language[:20]
+
+
+# ============================================================
+# 代码块
+#
+# 固定使用类似现代代码编辑器的深色样式：
+#
+# ┌─────────────────────────────┐
+# │ ● ● ●       JavaScript      │
+# ├─────────────────────────────┤
+# │ const app = createApp(App)  │
+# │ app.mount('#app')           │
+# └─────────────────────────────┘
+#
+# 样式由 Python 固定控制。
+# AI 只提供：
+# language / caption / code
+# ============================================================
+
+def render_code_block(code_block):
+
+    if not isinstance(
+        code_block,
+        dict
+    ):
+        return ""
+
+    code = code_block.get(
+        "code",
+        ""
+    )
+
+    if code is None:
+        code = ""
+
+    code = str(
+        code
+    )
+
+    if not code.strip():
+        return ""
+
+    language = clean_code_language(
+        code_block.get(
+            "language",
+            ""
+        )
+    )
+
+    caption = str(
+        code_block.get(
+            "caption",
+            ""
+        ) or ""
+    ).strip()
+
+    # --------------------------------------------------------
+    # 代码必须 HTML 转义
+    #
+    # 否则：
+    #
+    # <div>
+    # <script>
+    # </div>
+    #
+    # 这类代码会被微信当成 HTML。
+    # --------------------------------------------------------
+
+    escaped_code = html.escape(
+        code,
+        quote=False
+    )
+
+    caption_html = ""
+
+    if caption:
+
+        caption = clean_inline_markdown(
+            caption
+        )
+
+        caption = escape_text(
+            caption
+        )
+
+        caption_html = f"""
+<p style="
+    margin:12px 0 6px 0;
+    padding:0;
+    font-size:13px;
+    line-height:1.7em;
+    color:#666666;
+    width:100%;
+    box-sizing:border-box;
+">
+    {caption}
+</p>
+""".strip()
+
+    return f"""
+{caption_html}
+
+<section style="
+    margin:16px 0 20px 0;
+    padding:0;
+    width:100%;
+    box-sizing:border-box;
+    border-radius:8px;
+    overflow:hidden;
+    background-color:#282c34;
+    border:1px solid #3a3f4b;
+">
+
+    <!-- 代码块顶部栏 -->
+    <section style="
+        margin:0;
+        padding:0 12px;
+        height:34px;
+        line-height:34px;
+        background-color:#21252b;
+        box-sizing:border-box;
+        border-bottom:1px solid #3a3f4b;
+        position:relative;
+    ">
+
+        <!-- 左侧三个编辑器圆点 -->
+        <span style="
+            display:inline-block;
+            width:8px;
+            height:8px;
+            margin-right:5px;
+            border-radius:50%;
+            background-color:#ff5f56;
+            vertical-align:middle;
+        "></span>
+
+        <span style="
+            display:inline-block;
+            width:8px;
+            height:8px;
+            margin-right:5px;
+            border-radius:50%;
+            background-color:#ffbd2e;
+            vertical-align:middle;
+        "></span>
+
+        <span style="
+            display:inline-block;
+            width:8px;
+            height:8px;
+            margin-right:10px;
+            border-radius:50%;
+            background-color:#27c93f;
+            vertical-align:middle;
+        "></span>
+
+        <!-- 代码语言 -->
+        <span style="
+            font-size:11px;
+            line-height:34px;
+            color:#abb2bf;
+            vertical-align:middle;
+            letter-spacing:0.5px;
+        ">
+            {escape_text(language)}
+        </span>
+
+    </section>
+
+
+    <!-- 代码主体 -->
+    <section style="
+        margin:0;
+        padding:0;
+        width:100%;
+        box-sizing:border-box;
+        overflow-x:auto;
+        overflow-y:hidden;
+    ">
+
+        <pre style="
+            margin:0;
+            padding:15px 16px;
+            width:100%;
+            box-sizing:border-box;
+            background-color:#282c34;
+            color:#abb2bf;
+            font-family:
+                Menlo,
+                Monaco,
+                Consolas,
+                'Courier New',
+                monospace;
+            font-size:13px;
+            line-height:1.7em;
+            letter-spacing:0;
+            white-space:pre;
+            word-break:normal;
+            overflow-wrap:normal;
+            tab-size:2;
+        "><code style="
+            margin:0;
+            padding:0;
+            background-color:transparent;
+            color:#abb2bf;
+            font-family:
+                Menlo,
+                Monaco,
+                Consolas,
+                'Courier New',
+                monospace;
+            font-size:13px;
+            line-height:1.7em;
+            white-space:pre;
+        ">{escaped_code}</code></pre>
+
+    </section>
+
+</section>
+""".strip()
+
+
+# ============================================================
 # 顶部导语框
 #
 # 固定模板：
@@ -849,6 +1141,51 @@ def render_section(
                 items
             )
         )
+
+    # --------------------------------------------------------
+    # 代码块
+    #
+    # article.json：
+    #
+    # "code_blocks": [
+    #     {
+    #         "language": "javascript",
+    #         "caption": "示例代码",
+    #         "code": "const app = ..."
+    #     }
+    # ]
+    #
+    # 样式统一由 Python 控制。
+    # --------------------------------------------------------
+
+    code_blocks = section.get(
+        "code_blocks",
+        []
+    )
+
+    if isinstance(
+        code_blocks,
+        dict
+    ):
+        code_blocks = [
+            code_blocks
+        ]
+
+    if isinstance(
+        code_blocks,
+        list
+    ):
+
+        for code_block in code_blocks:
+
+            code_html = render_code_block(
+                code_block
+            )
+
+            if code_html:
+                html_parts.append(
+                    code_html
+                )
 
     return "\n".join(
         html_parts
