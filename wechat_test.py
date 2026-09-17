@@ -163,6 +163,97 @@ def escape_text(text):
 
 
 # ============================================================
+# 清洗章节标题
+#
+# 防止 AI 自己把 01 / 02 / 03 / 04 写进标题。
+# 编号统一由 Python 排版组件负责。
+# ============================================================
+
+def clean_section_heading(
+    heading,
+    number=None
+):
+
+    heading = str(
+        heading or ""
+    ).strip()
+
+    if not heading:
+        return ""
+
+    # 去掉 Markdown 标题
+    heading = re.sub(
+        r"^#{1,6}\s*",
+        "",
+        heading
+    ).strip()
+
+    # 去掉开头的章节编号
+    heading = re.sub(
+        r"^(?:0?[1-9]|1[0-9]|20)"
+        r"\s*(?:[：:、.\-—–])?\s*",
+        "",
+        heading
+    ).strip()
+
+    # 如果指定了当前编号，再做一次针对性清洗
+    if number is not None:
+
+        number_text = f"{number:02d}"
+
+        heading = re.sub(
+            rf"^{re.escape(number_text)}"
+            rf"\s*(?:[：:、.\-—–])?\s*",
+            "",
+            heading
+        ).strip()
+
+        heading = re.sub(
+            rf"^{number}"
+            rf"\s*(?:[：:、.\-—–])?\s*",
+            "",
+            heading
+        ).strip()
+
+    return heading
+
+
+# ============================================================
+# 清洗正文开头错误出现的章节编号
+# ============================================================
+
+def clean_section_paragraph(
+    text,
+    number
+):
+
+    text = str(
+        text or ""
+    ).strip()
+
+    if not text:
+        return ""
+
+    number_text = f"{number:02d}"
+
+    text = re.sub(
+        rf"^{re.escape(number_text)}"
+        r"\s*(?:[：:、.\-—–])?\s*",
+        "",
+        text
+    ).strip()
+
+    text = re.sub(
+        rf"^{number}"
+        r"\s*(?:[：:、.\-—–])?\s*",
+        "",
+        text
+    ).strip()
+
+    return text
+
+
+# ============================================================
 # Markdown 清洗
 # ============================================================
 
@@ -170,8 +261,7 @@ def clean_inline_markdown(text):
 
     text = str(text or "")
 
-    # Markdown 链接：
-    # [文字](https://xxx)
+    # Markdown 链接
     text = re.sub(
         r"\[([^\]]+)\]\([^)]+\)",
         r"\1",
@@ -258,13 +348,14 @@ def render_paragraph(text):
             f"<strong>{value}</strong>"
         )
 
-    # 清理 Markdown
+    # 清理 Markdown 链接
     text = re.sub(
         r"\[([^\]]+)\]\([^)]+\)",
         r"\1",
         text
     )
 
+    # 清理单星号
     text = re.sub(
         r"(?<!\*)\*([^*]+)\*(?!\*)",
         r"\1",
@@ -286,46 +377,53 @@ def render_paragraph(text):
 
 # ============================================================
 # 顶部导语框
+#
+# 固定模板：
+# 左上角黄色三角
+# 右下角蓝色三角
+# 蓝色边框
+# 浅蓝背景
 # ============================================================
 
 def render_lead(lead):
 
-    lead = str(lead or "").strip()
+    lead = str(
+        lead or ""
+    ).strip()
 
     if not lead:
         return ""
 
-    lead_html = render_paragraph(
+    lead = clean_inline_markdown(
         lead
     )
 
-    # 去掉 render_paragraph 外层 p
-    lead_html = re.sub(
-        r'^<p[^>]*>',
-        "",
-        lead_html
-    )
-
-    lead_html = re.sub(
-        r'</p>$',
-        "",
-        lead_html
+    lead = escape_text(
+        lead
     )
 
     return f"""
 <section style="
-    margin:10px auto;
+    margin:10px auto 24px auto;
     padding:10px 15px;
-    background-color:rgb(242,249,255);
-    border:1px solid rgb(80,132,249);
+    background-color:#f2f9ff;
+    border:1px solid #5c8efe;
     box-sizing:border-box;
     position:relative;
+    overflow:hidden;
 ">
+
+    <!-- 左上角黄色三角 -->
     <section style="
-        width:28px;
-        height:3px;
-        background-color:rgb(80,132,249);
-        margin-bottom:8px;
+        position:absolute;
+        top:-1px;
+        left:-1px;
+        width:0;
+        height:0;
+        border-top:18px solid rgb(255,196,64);
+        border-right:18px solid transparent;
+        line-height:0;
+        font-size:0;
     "></section>
 
     <p style="
@@ -333,24 +431,36 @@ def render_lead(lead):
         font-size:14px;
         line-height:1.75em;
         letter-spacing:1.5px;
-        color:rgb(51,51,51);
+        color:#333333;
     ">
-        {lead_html}
+        {lead}
     </p>
 
+    <!-- 右下角蓝色三角 -->
     <section style="
-        width:28px;
-        height:3px;
-        background-color:rgb(80,132,249);
-        margin-left:auto;
-        margin-top:8px;
+        position:absolute;
+        right:-1px;
+        bottom:-1px;
+        width:0;
+        height:0;
+        border-bottom:18px solid #5c8efe;
+        border-left:18px solid transparent;
+        line-height:0;
+        font-size:0;
     "></section>
+
 </section>
 """.strip()
 
 
 # ============================================================
 # 章节标题
+#
+# 固定模板：
+#
+# [蓝色折角编号标签] [浅蓝标题框] [黄色三角]
+#
+# 编号只在左侧标签中出现。
 # ============================================================
 
 def render_section_heading(
@@ -358,56 +468,120 @@ def render_section_heading(
     heading
 ):
 
+    heading = clean_section_heading(
+        heading,
+        number
+    )
+
     heading = escape_text(
         heading
     )
 
+    number_text = f"{number:02d}"
+
     return f"""
 <section style="
     margin:24px 0 16px 0;
+    padding:0;
     display:flex;
     align-items:stretch;
+    width:100%;
     box-sizing:border-box;
 ">
+
+    <!-- 左侧蓝色折角编号标签 -->
     <section style="
-        width:32px;
-        min-width:32px;
-        height:32px;
-        line-height:30px;
-        text-align:center;
-        font-size:14px;
-        font-weight:bold;
-        color:rgb(80,132,249);
-        background-color:rgb(242,249,255);
-        border:1px solid rgb(80,132,249);
+        width:60px;
+        min-width:60px;
+        height:30px;
+        position:relative;
         box-sizing:border-box;
+        background-color:#ebf6ff;
+        overflow:hidden;
     ">
-        {number:02d}
+
+        <!-- 蓝色折角主体 -->
+        <section style="
+            position:absolute;
+            left:0;
+            top:0;
+            width:50px;
+            height:30px;
+            background-color:#5c8efe;
+            clip-path:polygon(
+                0 0,
+                100% 0,
+                78% 50%,
+                100% 100%,
+                0 100%
+            );
+            box-sizing:border-box;
+        "></section>
+
+        <span style="
+            position:absolute;
+            left:0;
+            top:0;
+            width:40px;
+            height:30px;
+            line-height:30px;
+            text-align:center;
+            font-size:14px;
+            font-weight:bold;
+            color:#ffffff;
+            z-index:2;
+        ">
+            {number_text}
+        </span>
+
     </section>
 
+
+    <!-- 中间标题区域 -->
     <section style="
         flex:1;
-        margin-left:8px;
-        min-height:32px;
-        padding:5px 10px;
-        background-color:rgb(242,249,255);
-        border:1px solid rgb(80,132,249);
-        color:rgb(80,132,249);
+        min-width:0;
+        height:30px;
+        padding:0 12px;
+        background-color:#ebf6ff;
+        border-top:1px solid #5c8efe;
+        border-bottom:1px solid #5c8efe;
+        color:#5c8efe;
         font-size:16px;
-        line-height:1.5em;
+        line-height:28px;
         font-weight:bold;
         box-sizing:border-box;
+        overflow:hidden;
+        white-space:nowrap;
+        text-overflow:ellipsis;
     ">
         {heading}
     </section>
 
+
+    <!-- 右侧黄色三角 -->
     <section style="
-        width:8px;
-        min-width:8px;
-        height:32px;
-        margin-left:4px;
-        background-color:rgb(80,132,249);
-    "></section>
+        width:25px;
+        min-width:25px;
+        height:30px;
+        position:relative;
+        box-sizing:border-box;
+        overflow:hidden;
+    ">
+        <section style="
+            position:absolute;
+            right:0;
+            top:0;
+            width:0;
+            height:0;
+            border-top:15px solid rgb(255,196,64);
+            border-bottom:15px solid transparent;
+            border-left:15px solid transparent;
+            line-height:0;
+            font-size:0;
+        "></section>
+    </section>
+
 </section>
 """.strip()
 
@@ -421,6 +595,10 @@ def render_subsection(
     paragraph
 ):
 
+    heading = clean_inline_markdown(
+        heading
+    )
+
     heading = escape_text(
         heading
     )
@@ -428,6 +606,7 @@ def render_subsection(
     return f"""
 <p style="
     margin:16px 0 8px 0;
+    padding:0;
     font-size:15px;
     line-height:1.7em;
     font-weight:bold;
@@ -441,13 +620,17 @@ def render_subsection(
 
 
 # ============================================================
-# 金句
+# 一句话总结 / 金句
 # ============================================================
 
 def render_highlight(text):
 
     if not text:
         return ""
+
+    text = clean_inline_markdown(
+        text
+    )
 
     text = escape_text(
         text
@@ -456,9 +639,8 @@ def render_highlight(text):
     return f"""
 <section style="
     margin:16px 0;
-    padding:10px 12px;
-    background-color:rgb(248,251,255);
-    border-left:4px solid rgb(80,132,249);
+    padding:11px 14px;
+    background-color:#f8fbff;
     box-sizing:border-box;
 ">
     <p style="
@@ -493,6 +675,10 @@ def render_list(items):
 """
 
     for item in items:
+
+        item = clean_inline_markdown(
+            item
+        )
 
         item = escape_text(
             item
@@ -530,6 +716,7 @@ def render_section(
 
     html_parts = []
 
+    # 章节标题
     html_parts.append(
         render_section_heading(
             number,
@@ -540,12 +727,18 @@ def render_section(
         )
     )
 
+    # 正文段落
     paragraphs = section.get(
         "paragraphs",
         []
     )
 
     for paragraph in paragraphs:
+
+        paragraph = clean_section_paragraph(
+            paragraph,
+            number
+        )
 
         paragraph_html = render_paragraph(
             paragraph
@@ -556,6 +749,7 @@ def render_section(
                 paragraph_html
             )
 
+    # 小标题
     subsections = section.get(
         "subsections",
         []
@@ -576,6 +770,7 @@ def render_section(
             )
         )
 
+    # 金句
     highlight = section.get(
         "highlight",
         ""
@@ -589,6 +784,7 @@ def render_section(
             )
         )
 
+    # 列表
     items = section.get(
         "list",
         []
@@ -632,16 +828,8 @@ def build_wechat_html(article):
 
     ending = article.get(
         "ending",
-        ""
+        []
     )
-
-    # AI 当前返回的 ending 是一个字符串。
-    # 兼容未来返回列表的情况，避免字符串被逐字符遍历，
-    # 导致微信公众号里出现“A / I / a / g / e / n / t / s”这种竖排。
-    if isinstance(ending, list):
-        ending_paragraphs = ending
-    else:
-        ending_paragraphs = [ending]
 
     source = escape_text(
         article.get(
@@ -659,20 +847,14 @@ def build_wechat_html(article):
 
     html_parts = []
 
-    # --------------------------------------------------------
     # 导语
-    # --------------------------------------------------------
-
     html_parts.append(
         render_lead(
             lead
         )
     )
 
-    # --------------------------------------------------------
     # 01～04
-    # --------------------------------------------------------
-
     for index, section in enumerate(
         sections[:4],
         start=1
@@ -685,10 +867,7 @@ def build_wechat_html(article):
             )
         )
 
-    # --------------------------------------------------------
     # 05 写在最后
-    # --------------------------------------------------------
-
     html_parts.append(
         render_section_heading(
             5,
@@ -696,7 +875,7 @@ def build_wechat_html(article):
         )
     )
 
-    for paragraph in ending_paragraphs:
+    for paragraph in ending:
 
         paragraph_html = render_paragraph(
             paragraph
@@ -707,10 +886,7 @@ def build_wechat_html(article):
                 paragraph_html
             )
 
-    # --------------------------------------------------------
     # 来源
-    # --------------------------------------------------------
-
     html_parts.append(
         f"""
 <section style="
@@ -846,6 +1022,7 @@ def upload_cover_image(
         COVER_IMAGE,
         "rb"
     ) as f:
+
         file_data = f.read()
 
     filename = os.path.basename(
@@ -1006,15 +1183,19 @@ def add_draft(
     print("")
     print("=" * 50)
     print("🎉 微信公众号草稿创建成功！")
+
     print(
         f"草稿 media_id：{media_id}"
     )
+
     print(
         f"文章标题：{title}"
     )
+
     print(
         "现在可以进入微信公众号后台 → 草稿箱查看。"
     )
+
     print("=" * 50)
 
     return media_id
