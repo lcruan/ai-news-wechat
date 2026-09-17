@@ -32,7 +32,8 @@ COVER_FILE = "cover.jpg"
 # ============================================================
 
 # 当前阶段只使用 DEV.to。
-# 公众号定位以 Web 前端技术为主，重点关注 Vue、TypeScript、JavaScript、React、CSS、Vite、Web 性能等。
+# 公众号定位以 Web 前端技术为主，重点关注 Vue、TypeScript、
+# JavaScript、React、CSS、Vite、Web 性能等。
 DEV_API_URL = "https://dev.to/api/articles"
 
 DEV_TAGS = [
@@ -84,6 +85,38 @@ FRONTEND_KEYWORDS = [
     "web engineering",
 ]
 
+# AI 关键词
+#
+# 注意：
+# filter_news() 会使用 AI_KEYWORDS。
+# 原代码没有定义这个变量，因此即使 fetch_url 修复成功，
+# 运行到关键词过滤阶段仍然会出现：
+#
+# NameError: name 'AI_KEYWORDS' is not defined
+#
+# 这里补上，避免第二次运行再次失败。
+AI_KEYWORDS = [
+    "artificial intelligence",
+    "generative ai",
+    "genai",
+    "ai",
+    "llm",
+    "large language model",
+    "machine learning",
+    "deep learning",
+    "openai",
+    "chatgpt",
+    "claude",
+    "gemini",
+    "copilot",
+    "cursor",
+    "ai coding",
+    "ai programming",
+    "coding agent",
+    "ai agent",
+    "agentic",
+]
+
 ROUNDUP_KEYWORDS = [
     "newsletter",
     "weekly roundup",
@@ -98,6 +131,179 @@ ROUNDUP_KEYWORDS = [
 # ============================================================
 # 通用工具
 # ============================================================
+
+def fetch_url(url, timeout=REQUEST_TIMEOUT):
+    """
+    通用 HTTP GET 请求。
+
+    DEV.to 的列表接口和单篇文章详情接口都会使用这个函数。
+
+    返回：
+        (response_data, content_type)
+
+    response_data:
+        bytes 类型的响应内容
+
+    content_type:
+        HTTP Content-Type
+    """
+
+    request = urllib.request.Request(
+        url,
+        headers={
+            "User-Agent": (
+                "Mozilla/5.0 "
+                "(X11; Linux x86_64) "
+                "AppleWebKit/537.36 "
+                "(KHTML, like Gecko) "
+                "Chrome/120 Safari/537.36"
+            ),
+            "Accept": (
+                "application/json,"
+                "application/xml,"
+                "text/xml,"
+                "text/html,"
+                "*/*"
+            ),
+        },
+        method="GET",
+    )
+
+    try:
+
+        with urllib.request.urlopen(
+            request,
+            timeout=timeout,
+        ) as response:
+
+            data = response.read()
+
+            content_type = (
+                response.headers.get(
+                    "Content-Type",
+                    "",
+                )
+            )
+
+            return data, content_type
+
+    except urllib.error.HTTPError as e:
+
+        error_body = ""
+
+        try:
+            error_body = e.read().decode(
+                "utf-8",
+                errors="ignore",
+            )
+        except Exception:
+            pass
+
+        print(
+            f"HTTP 请求失败：{e.code} "
+            f"{e.reason}"
+        )
+
+        if error_body:
+            print(
+                error_body[:1000]
+            )
+
+        raise
+
+    except (
+        urllib.error.URLError,
+        TimeoutError,
+        socket.timeout,
+    ) as e:
+
+        print(
+            f"HTTP 请求失败：{str(e)}"
+        )
+
+        raise
+
+
+def clean_text(text):
+    """
+    清理 HTML、空白字符以及常见实体。
+    """
+
+    if text is None:
+        return ""
+
+    text = str(text)
+
+    text = html.unescape(text)
+
+    # 去除 HTML 标签
+    text = re.sub(
+        r"<[^>]+>",
+        " ",
+        text,
+    )
+
+    # 统一空白
+    text = re.sub(
+        r"\s+",
+        " ",
+        text,
+    )
+
+    return text.strip()
+
+
+def truncate_text(text, max_chars):
+    """
+    截断文本，避免发送给 AI 的上下文过长。
+    """
+
+    if not text:
+        return ""
+
+    text = str(text)
+
+    if len(text) <= max_chars:
+        return text
+
+    return text[:max_chars] + "..."
+
+
+def normalize_url(url):
+    """
+    规范化 URL。
+    """
+
+    if not url:
+        return ""
+
+    url = html.unescape(
+        str(url).strip()
+    )
+
+    if url.startswith("//"):
+        url = "https:" + url
+
+    return url
+
+
+def contains_keyword(text, keywords):
+    """
+    判断文本是否包含关键词。
+
+    使用小写匹配。
+    """
+
+    if not text:
+        return False
+
+    text = str(text).lower()
+
+    return any(
+        keyword.lower() in text
+        for keyword in keywords
+    )
+
 
 # ============================================================
 # DEV.to
@@ -119,17 +325,28 @@ def fetch_dev_articles(tag):
 
     data, _ = fetch_url(url)
 
-    articles = json.loads(data.decode("utf-8"))
+    articles = json.loads(
+        data.decode("utf-8")
+    )
 
     results = []
 
     for item in articles[:MAX_NEWS_PER_SOURCE]:
 
         article_id = item.get("id")
-        title = clean_text(item.get("title", ""))
-        description = clean_text(item.get("description", ""))
-        link = normalize_url(item.get("url", ""))
-        published_at = item.get("published_at", "")
+        title = clean_text(
+            item.get("title", "")
+        )
+        description = clean_text(
+            item.get("description", "")
+        )
+        link = normalize_url(
+            item.get("url", "")
+        )
+        published_at = item.get(
+            "published_at",
+            "",
+        )
 
         cover_image = (
             item.get("cover_image")
@@ -165,13 +382,18 @@ def fetch_dev_articles(tag):
             ),
             "link": link,
             "pubDate": published_at,
-            "cover_image": normalize_url(cover_image),
+            "cover_image": normalize_url(
+                cover_image
+            ),
             "social_image": normalize_url(
                 item.get("social_image", "")
             ),
         })
 
-    print(f"DEV.to {tag} 有效文章：{len(results)}")
+    print(
+        f"DEV.to {tag} 有效文章："
+        f"{len(results)}"
+    )
 
     return results
 
@@ -196,15 +418,24 @@ def fetch_dev_article_detail(article_id):
     print("=" * 60)
 
     data, _ = fetch_url(url)
-    article = json.loads(data.decode("utf-8"))
+
+    article = json.loads(
+        data.decode("utf-8")
+    )
 
     body_markdown = str(
-        article.get("body_markdown", "")
+        article.get(
+            "body_markdown",
+            "",
+        )
         or ""
     ).strip()
 
     body_html = str(
-        article.get("body_html", "")
+        article.get(
+            "body_html",
+            "",
+        )
         or ""
     ).strip()
 
@@ -213,7 +444,9 @@ def fetch_dev_article_detail(article_id):
     source_content = body_markdown
 
     if not source_content:
-        source_content = clean_text(body_html)
+        source_content = clean_text(
+            body_html
+        )
 
     source_content = source_content.strip()
 
@@ -234,7 +467,8 @@ def fetch_dev_article_detail(article_id):
         )
 
     print(
-        f"DEV.to 完整正文长度：{len(source_content)} 字符"
+        f"DEV.to 完整正文长度："
+        f"{len(source_content)} 字符"
     )
 
     return {
@@ -244,7 +478,10 @@ def fetch_dev_article_detail(article_id):
         ),
         "cover_image": cover_image,
         "social_image": normalize_url(
-            article.get("social_image", "")
+            article.get(
+                "social_image",
+                "",
+            )
         ),
     }
 
@@ -264,6 +501,7 @@ def extract_image_from_html(content):
     ]
 
     for pattern in patterns:
+
         match = re.search(
             pattern,
             content,
@@ -271,6 +509,7 @@ def extract_image_from_html(content):
         )
 
         if match:
+
             image_url = html.unescape(
                 match.group(1)
             ).strip()
@@ -278,7 +517,10 @@ def extract_image_from_html(content):
             if image_url.startswith("//"):
                 image_url = "https:" + image_url
 
-            if image_url.startswith("http://") or image_url.startswith("https://"):
+            if (
+                image_url.startswith("http://")
+                or image_url.startswith("https://")
+            ):
                 return image_url
 
     return ""
@@ -308,9 +550,13 @@ def call_ai(messages, max_tokens=4000):
         ensure_ascii=False,
     ).encode("utf-8")
 
-    for attempt in range(1, MAX_RETRIES + 1):
+    for attempt in range(
+        1,
+        MAX_RETRIES + 1,
+    ):
 
         print("")
+
         print(
             f"正在调用 SiliconFlow，第 "
             f"{attempt}/{MAX_RETRIES} 次..."
@@ -339,19 +585,29 @@ def call_ai(messages, max_tokens=4000):
                 response_data = response.read()
 
             result = json.loads(
-                response_data.decode("utf-8")
+                response_data.decode(
+                    "utf-8"
+                )
             )
 
-            choices = result.get("choices")
+            choices = result.get(
+                "choices"
+            )
 
             if not choices:
                 raise RuntimeError(
                     "SiliconFlow 返回结果中没有 choices"
                 )
 
-            message = choices[0].get("message", {})
+            message = choices[0].get(
+                "message",
+                {}
+            )
 
-            content = message.get("content", "")
+            content = message.get(
+                "content",
+                ""
+            )
 
             if not content:
                 raise RuntimeError(
@@ -377,7 +633,9 @@ def call_ai(messages, max_tokens=4000):
                 f"{e.code}"
             )
 
-            print(error_body[:1000])
+            print(
+                error_body[:1000]
+            )
 
             if e.code not in [
                 429,
@@ -412,10 +670,13 @@ def call_ai(messages, max_tokens=4000):
                 f"{RETRY_WAIT_SECONDS} 秒后自动重试..."
             )
 
-            time.sleep(RETRY_WAIT_SECONDS)
+            time.sleep(
+                RETRY_WAIT_SECONDS
+            )
 
     raise RuntimeError(
-        f"SiliconFlow 连续 {MAX_RETRIES} 次请求失败"
+        f"SiliconFlow 连续 "
+        f"{MAX_RETRIES} 次请求失败"
     )
 
 
@@ -428,6 +689,7 @@ def extract_json_from_ai(text):
     text = text.strip()
 
     if text.startswith("```"):
+
         text = re.sub(
             r"^```(?:json)?\s*",
             "",
@@ -445,7 +707,9 @@ def extract_json_from_ai(text):
     end = text.rfind("}")
 
     if start >= 0 and end > start:
-        text = text[start:end + 1]
+        text = text[
+            start:end + 1
+        ]
 
     return text
 
@@ -463,18 +727,35 @@ def ai_select_news(news_list):
 
     compact_news = []
 
-    for index, item in enumerate(news_list):
+    for index, item in enumerate(
+        news_list
+    ):
 
         compact_news.append({
             "id": index,
-            "source": item.get("source", ""),
-            "title": item.get("title", ""),
+            "source": item.get(
+                "source",
+                "",
+            ),
+            "title": item.get(
+                "title",
+                "",
+            ),
             "summary": truncate_text(
-                item.get("summary", ""),
+                item.get(
+                    "summary",
+                    "",
+                ),
                 MAX_SCREENING_SUMMARY_CHARS,
             ),
-            "link": item.get("link", ""),
-            "pubDate": item.get("pubDate", ""),
+            "link": item.get(
+                "link",
+                "",
+            ),
+            "pubDate": item.get(
+                "pubDate",
+                "",
+            ),
         })
 
     context = json.dumps(
@@ -483,7 +764,10 @@ def ai_select_news(news_list):
     )
 
     if len(context) > MAX_SCREENING_CONTEXT_CHARS:
-        context = context[:MAX_SCREENING_CONTEXT_CHARS]
+
+        context = context[
+            :MAX_SCREENING_CONTEXT_CHARS
+        ]
 
     prompt = f"""
 你是一名技术新闻编辑。
@@ -530,27 +814,43 @@ def ai_select_news(news_list):
 {context}
 """
 
-    result = call_ai([
-        {
-            "role": "user",
-            "content": prompt,
-        }
-    ], max_tokens=1200)
-
-    result = extract_json_from_ai(result)
-
-    data = json.loads(result)
-
-    selected_id = int(
-        data.get("selected_id", 0)
+    result = call_ai(
+        [
+            {
+                "role": "user",
+                "content": prompt,
+            }
+        ],
+        max_tokens=1200,
     )
 
-    if selected_id < 0 or selected_id >= len(news_list):
+    result = extract_json_from_ai(
+        result
+    )
+
+    data = json.loads(
+        result
+    )
+
+    selected_id = int(
+        data.get(
+            "selected_id",
+            0,
+        )
+    )
+
+    if (
+        selected_id < 0
+        or selected_id >= len(news_list)
+    ):
         raise RuntimeError(
-            f"AI 返回的 selected_id 无效：{selected_id}"
+            f"AI 返回的 selected_id 无效："
+            f"{selected_id}"
         )
 
-    selected = news_list[selected_id].copy()
+    selected = news_list[
+        selected_id
+    ].copy()
 
     selected["ai_score"] = data.get(
         "score",
@@ -576,12 +876,35 @@ def ai_select_news(news_list):
 
 def ai_generate_article(news):
 
-    source = news.get("source", "")
-    title = news.get("title", "")
-    summary = news.get("summary", "")
-    source_content = news.get("source_content", "")
-    link = news.get("link", "")
-    pub_date = news.get("pubDate", "")
+    source = news.get(
+        "source",
+        "",
+    )
+
+    title = news.get(
+        "title",
+        "",
+    )
+
+    summary = news.get(
+        "summary",
+        "",
+    )
+
+    source_content = news.get(
+        "source_content",
+        "",
+    )
+
+    link = news.get(
+        "link",
+        "",
+    )
+
+    pub_date = news.get(
+        "pubDate",
+        "",
+    )
 
     fact_context = {
         "source": source,
@@ -696,23 +1019,36 @@ web前端开发之旅
 }}
 """
 
-    result = call_ai([
-        {
-            "role": "user",
-            "content": prompt,
-        }
-    ], max_tokens=5000)
+    result = call_ai(
+        [
+            {
+                "role": "user",
+                "content": prompt,
+            }
+        ],
+        max_tokens=5000,
+    )
 
-    result = extract_json_from_ai(result)
+    result = extract_json_from_ai(
+        result
+    )
 
-    article = json.loads(result)
+    article = json.loads(
+        result
+    )
 
     title = clean_text(
-        article.get("title", "")
+        article.get(
+            "title",
+            "",
+        )
     )
 
     lead = clean_text(
-        article.get("lead", "")
+        article.get(
+            "lead",
+            "",
+        )
     )
 
     sections = article.get(
@@ -721,7 +1057,10 @@ web前端开发之旅
     )
 
     ending = clean_text(
-        article.get("ending", "")
+        article.get(
+            "ending",
+            "",
+        )
     )
 
     if not title:
@@ -734,7 +1073,10 @@ web前端开发之旅
             "AI 生成的文章缺少 lead"
         )
 
-    if not isinstance(sections, list):
+    if not isinstance(
+        sections,
+        list,
+    ):
         raise RuntimeError(
             "AI 生成的 sections 格式错误"
         )
@@ -743,11 +1085,17 @@ web前端开发之旅
 
     for section in sections[:4]:
 
-        if not isinstance(section, dict):
+        if not isinstance(
+            section,
+            dict,
+        ):
             continue
 
         heading = clean_text(
-            section.get("heading", "")
+            section.get(
+                "heading",
+                "",
+            )
         )
 
         paragraphs = section.get(
@@ -760,7 +1108,10 @@ web前端开发之旅
 
         cleaned_paragraphs = []
 
-        if isinstance(paragraphs, list):
+        if isinstance(
+            paragraphs,
+            list,
+        ):
 
             for paragraph in paragraphs:
 
@@ -774,12 +1125,14 @@ web前端开发之旅
                     )
 
         if cleaned_paragraphs:
+
             cleaned_sections.append({
                 "heading": heading,
                 "paragraphs": cleaned_paragraphs,
             })
 
     if not cleaned_sections:
+
         raise RuntimeError(
             "AI 没有生成有效正文"
         )
@@ -811,7 +1164,10 @@ def deduplicate_news(news_list):
 
     for item in news_list:
 
-        link = item.get("link", "").strip()
+        link = item.get(
+            "link",
+            "",
+        ).strip()
 
         if not link:
             continue
@@ -851,10 +1207,12 @@ def filter_news(news_list):
             keyword in title
             for keyword in ROUNDUP_KEYWORDS
         ):
+
             print(
                 "跳过汇总类文章：",
                 item.get("title"),
             )
+
             continue
 
         if not (
@@ -889,7 +1247,9 @@ def is_jpeg(data):
     if not data:
         return False
 
-    return data.startswith(b"\xff\xd8\xff")
+    return data.startswith(
+        b"\xff\xd8\xff"
+    )
 
 
 # ============================================================
@@ -928,7 +1288,9 @@ def download_cover(image_urls):
 
     existing_cover = None
 
-    if os.path.exists(COVER_FILE):
+    if os.path.exists(
+        COVER_FILE
+    ):
 
         try:
 
@@ -936,9 +1298,12 @@ def download_cover(image_urls):
                 COVER_FILE,
                 "rb",
             ) as f:
+
                 existing_cover = f.read()
 
-            if is_jpeg(existing_cover):
+            if is_jpeg(
+                existing_cover
+            ):
 
                 print(
                     "仓库中的 cover.jpg 是有效 JPEG，"
@@ -971,7 +1336,9 @@ def download_cover(image_urls):
 
     for url in image_urls:
 
-        url = normalize_image_url(url)
+        url = normalize_image_url(
+            url
+        )
 
         if not url:
             continue
@@ -980,14 +1347,18 @@ def download_cover(image_urls):
             urls.append(url)
 
     print(
-        f"候选封面图片：{len(urls)} 个"
+        f"候选封面图片："
+        f"{len(urls)} 个"
     )
 
     # --------------------------------------------------------
     # 逐个尝试
     # --------------------------------------------------------
 
-    for index, image_url in enumerate(urls, 1):
+    for index, image_url in enumerate(
+        urls,
+        1,
+    ):
 
         print("")
         print(
@@ -999,21 +1370,37 @@ def download_cover(image_urls):
 
         try:
 
-            # DEV.to 的 media2 图片代理经常会把 format=auto 返回成 WebP。
-            # 微信封面这里最终必须使用真正的 JPEG，因此优先请求 JPEG 格式。
+            # DEV.to 的 media2 图片代理经常会把
+            # format=auto 返回成 WebP。
+            # 微信封面这里最终必须使用真正的 JPEG，
+            # 因此优先请求 JPEG 格式。
             request_url = image_url
+
             if (
-                "media2.dev.to" in request_url
-                and "format=auto" in request_url
+                "media2.dev.to"
+                in request_url
+                and "format=auto"
+                in request_url
             ):
+
                 request_url = request_url.replace(
                     "format=auto",
                     "format=jpg",
                     1,
                 )
-                print("检测到 DEV.to 图片代理的 format=auto")
-                print("改为请求 JPEG：")
-                print(request_url)
+
+                print(
+                    "检测到 DEV.to 图片代理的 "
+                    "format=auto"
+                )
+
+                print(
+                    "改为请求 JPEG："
+                )
+
+                print(
+                    request_url
+                )
 
             request = urllib.request.Request(
                 request_url,
@@ -1051,11 +1438,13 @@ def download_cover(image_urls):
                 data = response.read()
 
             print(
-                f"图片大小：{len(data)} bytes"
+                f"图片大小："
+                f"{len(data)} bytes"
             )
 
             print(
-                f"Content-Type：{content_type}"
+                f"Content-Type："
+                f"{content_type}"
             )
 
             # ------------------------------------------------
@@ -1104,6 +1493,7 @@ def download_cover(image_urls):
                 COVER_FILE,
                 "wb",
             ) as f:
+
                 f.write(data)
 
             # 再验证一次
@@ -1111,9 +1501,12 @@ def download_cover(image_urls):
                 COVER_FILE,
                 "rb",
             ) as f:
+
                 saved_data = f.read()
 
-            if not is_jpeg(saved_data):
+            if not is_jpeg(
+                saved_data
+            ):
 
                 print(
                     "错误：保存后的 cover.jpg "
@@ -1128,11 +1521,13 @@ def download_cover(image_urls):
             )
 
             print(
-                f"最终文件：{COVER_FILE}"
+                f"最终文件："
+                f"{COVER_FILE}"
             )
 
             print(
-                f"文件大小：{len(saved_data)} bytes"
+                f"文件大小："
+                f"{len(saved_data)} bytes"
             )
 
             return True
@@ -1167,7 +1562,10 @@ def download_cover(image_urls):
             COVER_FILE,
             "wb",
         ) as f:
-            f.write(existing_cover)
+
+            f.write(
+                existing_cover
+            )
 
         print("")
         print(
@@ -1175,7 +1573,8 @@ def download_cover(image_urls):
         )
 
         print(
-            "已使用仓库中的固定 cover.jpg 作为备用封面。"
+            "已使用仓库中的固定 cover.jpg "
+            "作为备用封面。"
         )
 
         return True
@@ -1183,8 +1582,6 @@ def download_cover(image_urls):
     # --------------------------------------------------------
     # 连备用封面都没有
     # 直接失败。
-    #
-    # 不能再生成一个 PNG/WebP 然后伪装成 JPG。
     # --------------------------------------------------------
 
     raise RuntimeError(
@@ -1208,7 +1605,9 @@ def collect_cover_urls(news):
     )
 
     if cover_image:
-        urls.append(cover_image)
+        urls.append(
+            cover_image
+        )
 
     # DEV.to 可能有多个图片字段
     for key in [
@@ -1216,7 +1615,10 @@ def collect_cover_urls(news):
         "cover_image",
     ]:
 
-        value = news.get(key, "")
+        value = news.get(
+            key,
+            "",
+        )
 
         if value and value not in urls:
             urls.append(value)
@@ -1251,7 +1653,6 @@ def main():
 
     all_news = []
 
-
     for tag in DEV_TAGS:
 
         try:
@@ -1260,7 +1661,9 @@ def main():
                 tag
             )
 
-            all_news.extend(news)
+            all_news.extend(
+                news
+            )
 
         except Exception as e:
 
@@ -1269,13 +1672,18 @@ def main():
                 f"DEV.to {tag} 抓取失败："
             )
 
-            print(str(e))
+            print(
+                str(e)
+            )
 
     print("")
     print("=" * 60)
+
     print(
-        f"原始新闻数量：{len(all_news)}"
+        f"原始新闻数量："
+        f"{len(all_news)}"
     )
+
     print("=" * 60)
 
     # --------------------------------------------------------
@@ -1287,7 +1695,8 @@ def main():
     )
 
     print(
-        f"URL 去重后：{len(all_news)}"
+        f"URL 去重后："
+        f"{len(all_news)}"
     )
 
     # --------------------------------------------------------
@@ -1299,7 +1708,8 @@ def main():
     )
 
     print(
-        f"关键词过滤后：{len(all_news)}"
+        f"关键词过滤后："
+        f"{len(all_news)}"
     )
 
     if not all_news:
@@ -1358,7 +1768,9 @@ def main():
     # --------------------------------------------------------
 
     detail = fetch_dev_article_detail(
-        selected_news.get("id")
+        selected_news.get(
+            "id"
+        )
     )
 
     selected_news["source_content"] = detail.get(
@@ -1366,13 +1778,20 @@ def main():
         "",
     )
 
-    # 如果列表接口没有提供封面，则使用详情接口里的封面。
-    if detail.get("cover_image"):
+    # 如果列表接口没有提供封面，
+    # 则使用详情接口里的封面。
+    if detail.get(
+        "cover_image"
+    ):
+
         selected_news["cover_image"] = detail.get(
             "cover_image"
         )
 
-    if detail.get("social_image"):
+    if detail.get(
+        "social_image"
+    ):
+
         selected_news["social_image"] = detail.get(
             "social_image"
         )
@@ -1395,26 +1814,52 @@ def main():
     print("=" * 60)
 
     print("")
-    print(f"标题：{article.get('title', '')}")
+    print(
+        f"标题："
+        f"{article.get('title', '')}"
+    )
 
     print("")
     print("导语：")
-    print(article.get("lead", ""))
+    print(
+        article.get(
+            "lead",
+            "",
+        )
+    )
 
     for index, section in enumerate(
-        article.get("sections", []),
+        article.get(
+            "sections",
+            [],
+        ),
         1,
     ):
-        print("")
-        print(f"{index:02d}｜{section.get('heading', '')}")
 
-        for paragraph in section.get("paragraphs", []):
+        print("")
+        print(
+            f"{index:02d}｜"
+            f"{section.get('heading', '')}"
+        )
+
+        for paragraph in section.get(
+            "paragraphs",
+            [],
+        ):
+
             print("")
-            print(paragraph)
+            print(
+                paragraph
+            )
 
     print("")
     print("写在最后：")
-    print(article.get("ending", ""))
+    print(
+        article.get(
+            "ending",
+            "",
+        )
+    )
 
     print("")
     print("=" * 60)
@@ -1460,19 +1905,23 @@ def main():
     print("=" * 60)
 
     print(
-        f"文章标题：{article['title']}"
+        f"文章标题："
+        f"{article['title']}"
     )
 
     print(
-        f"来源：{article['source']}"
+        f"来源："
+        f"{article['source']}"
     )
 
     print(
-        f"原文：{article['original_link']}"
+        f"原文："
+        f"{article['original_link']}"
     )
 
     print(
-        f"正文小节：{len(article['sections'])}"
+        f"正文小节："
+        f"{len(article['sections'])}"
     )
 
     print("")
