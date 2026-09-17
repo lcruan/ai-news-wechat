@@ -189,6 +189,15 @@ def clean_section_heading(
     ).strip()
 
     # 去掉开头的章节编号
+    #
+    # 支持：
+    # 01 标题
+    # 01：标题
+    # 01 - 标题
+    # 01 — 标题
+    # 01. 标题
+    # 01、标题
+    #
     heading = re.sub(
         r"^(?:0?[1-9]|1[0-9]|20)"
         r"\s*(?:[：:、.\-—–])?\s*",
@@ -220,6 +229,12 @@ def clean_section_heading(
 
 # ============================================================
 # 清洗正文开头错误出现的章节编号
+#
+# 例如：
+# 01 近日，社交平台……
+#
+# 自动变成：
+# 近日，社交平台……
 # ============================================================
 
 def clean_section_paragraph(
@@ -236,6 +251,7 @@ def clean_section_paragraph(
 
     number_text = f"{number:02d}"
 
+    # 只处理正文最开始的编号
     text = re.sub(
         rf"^{re.escape(number_text)}"
         r"\s*(?:[：:、.\-—–])?\s*",
@@ -261,7 +277,8 @@ def clean_inline_markdown(text):
 
     text = str(text or "")
 
-    # Markdown 链接
+    # Markdown 链接：
+    # [文字](https://xxx)
     text = re.sub(
         r"\[([^\]]+)\]\([^)]+\)",
         r"\1",
@@ -369,6 +386,10 @@ def render_paragraph(text):
         'line-height:1.8em;'
         'letter-spacing:1px;'
         'color:#333333;'
+        'width:100%;'
+        'box-sizing:border-box;'
+        'word-break:normal;'
+        'overflow-wrap:normal;'
         '">'
         f"{text}"
         "</p>"
@@ -394,10 +415,12 @@ def render_lead(lead):
     if not lead:
         return ""
 
+    # 清理 Markdown
     lead = clean_inline_markdown(
         lead
     )
 
+    # HTML 转义
     lead = escape_text(
         lead
     )
@@ -432,6 +455,10 @@ def render_lead(lead):
         line-height:1.75em;
         letter-spacing:1.5px;
         color:#333333;
+        width:100%;
+        box-sizing:border-box;
+        word-break:normal;
+        overflow-wrap:normal;
     ">
         {lead}
     </p>
@@ -611,6 +638,8 @@ def render_subsection(
     line-height:1.7em;
     font-weight:bold;
     color:#333333;
+    width:100%;
+    box-sizing:border-box;
 ">
     {heading}
 </p>
@@ -642,12 +671,15 @@ def render_highlight(text):
     padding:11px 14px;
     background-color:#f8fbff;
     box-sizing:border-box;
+    width:100%;
 ">
     <p style="
         margin:0;
         font-size:14px;
         line-height:1.8em;
         color:#333333;
+        width:100%;
+        box-sizing:border-box;
     ">
         <strong>{text}</strong>
     </p>
@@ -671,6 +703,8 @@ def render_list(items):
     font-size:14px;
     line-height:1.8em;
     color:#333333;
+    width:100%;
+    box-sizing:border-box;
 ">
 """
 
@@ -692,6 +726,8 @@ def render_list(items):
         margin:0;
         font-size:14px;
         line-height:1.8em;
+        width:100%;
+        box-sizing:border-box;
     ">
         {item}
     </p>
@@ -716,7 +752,10 @@ def render_section(
 
     html_parts = []
 
+    # --------------------------------------------------------
     # 章节标题
+    # --------------------------------------------------------
+
     html_parts.append(
         render_section_heading(
             number,
@@ -727,7 +766,10 @@ def render_section(
         )
     )
 
+    # --------------------------------------------------------
     # 正文段落
+    # --------------------------------------------------------
+
     paragraphs = section.get(
         "paragraphs",
         []
@@ -735,6 +777,7 @@ def render_section(
 
     for paragraph in paragraphs:
 
+        # 清理 AI 错误输出的章节编号
         paragraph = clean_section_paragraph(
             paragraph,
             number
@@ -749,7 +792,10 @@ def render_section(
                 paragraph_html
             )
 
+    # --------------------------------------------------------
     # 小标题
+    # --------------------------------------------------------
+
     subsections = section.get(
         "subsections",
         []
@@ -770,7 +816,10 @@ def render_section(
             )
         )
 
+    # --------------------------------------------------------
     # 金句
+    # --------------------------------------------------------
+
     highlight = section.get(
         "highlight",
         ""
@@ -784,7 +833,10 @@ def render_section(
             )
         )
 
+    # --------------------------------------------------------
     # 列表
+    # --------------------------------------------------------
+
     items = section.get(
         "list",
         []
@@ -801,6 +853,127 @@ def render_section(
     return "\n".join(
         html_parts
     )
+
+
+# ============================================================
+# 处理 ending
+#
+# 兼容：
+#
+# 1. ending 是字符串
+# 2. ending 是正常段落数组
+# 3. ending 被 AI 错误拆成单字数组
+#
+# 第 3 种情况：
+#
+# ["这", "篇", "文", "章"]
+#
+# 自动恢复成：
+#
+# ["这篇文章"]
+#
+# 防止微信公众号出现：
+#
+# 这
+# 篇
+# 文
+# 章
+#
+# 一字一行。
+# ============================================================
+
+def normalize_ending(ending):
+
+    # --------------------------------------------------------
+    # 情况 1：
+    # ending 直接是字符串
+    # --------------------------------------------------------
+
+    if isinstance(
+        ending,
+        str
+    ):
+
+        ending = ending.strip()
+
+        if not ending:
+            return []
+
+        # 如果字符串内部本身有换行，
+        # 按段落拆分。
+        paragraphs = re.split(
+            r"\n+",
+            ending
+        )
+
+        return [
+            paragraph.strip()
+            for paragraph in paragraphs
+            if paragraph.strip()
+        ]
+
+    # --------------------------------------------------------
+    # 情况 2：
+    # ending 不是数组
+    # --------------------------------------------------------
+
+    if not isinstance(
+        ending,
+        list
+    ):
+
+        if ending is None:
+            return []
+
+        text = str(
+            ending
+        ).strip()
+
+        return [text] if text else []
+
+    # --------------------------------------------------------
+    # 去掉空内容
+    # --------------------------------------------------------
+
+    ending = [
+        str(item).strip()
+        for item in ending
+        if str(item).strip()
+    ]
+
+    if not ending:
+        return []
+
+    # --------------------------------------------------------
+    # 情况 3：
+    #
+    # AI 错误地把一句话拆成了单字数组：
+    #
+    # ["这", "篇", "文", "章", "很", "重", "要"]
+    #
+    # 如果数组中的每一项都是单个字符，
+    # 说明它不是正常的段落数组。
+    #
+    # 这里把它重新拼接。
+    # --------------------------------------------------------
+
+    if (
+        len(ending) > 1
+        and all(
+            len(item) == 1
+            for item in ending
+        )
+    ):
+
+        return [
+            "".join(ending)
+        ]
+
+    # --------------------------------------------------------
+    # 正常段落数组
+    # --------------------------------------------------------
+
+    return ending
 
 
 # ============================================================
@@ -847,14 +1020,20 @@ def build_wechat_html(article):
 
     html_parts = []
 
+    # --------------------------------------------------------
     # 导语
+    # --------------------------------------------------------
+
     html_parts.append(
         render_lead(
             lead
         )
     )
 
+    # --------------------------------------------------------
     # 01～04
+    # --------------------------------------------------------
+
     for index, section in enumerate(
         sections[:4],
         start=1
@@ -867,7 +1046,10 @@ def build_wechat_html(article):
             )
         )
 
+    # --------------------------------------------------------
     # 05 写在最后
+    # --------------------------------------------------------
+
     html_parts.append(
         render_section_heading(
             5,
@@ -875,7 +1057,17 @@ def build_wechat_html(article):
         )
     )
 
-    for paragraph in ending:
+    # --------------------------------------------------------
+    # 规范化 ending
+    #
+    # 防止 ending 被错误拆成单字数组。
+    # --------------------------------------------------------
+
+    ending_paragraphs = normalize_ending(
+        ending
+    )
+
+    for paragraph in ending_paragraphs:
 
         paragraph_html = render_paragraph(
             paragraph
@@ -886,19 +1078,26 @@ def build_wechat_html(article):
                 paragraph_html
             )
 
+    # --------------------------------------------------------
     # 来源
+    # --------------------------------------------------------
+
     html_parts.append(
         f"""
 <section style="
     margin-top:28px;
     padding-top:12px;
     border-top:1px solid #eeeeee;
+    width:100%;
+    box-sizing:border-box;
 ">
     <p style="
         margin:6px 0;
         font-size:12px;
         line-height:1.7em;
         color:#999999;
+        width:100%;
+        box-sizing:border-box;
     ">
         <strong>来源：</strong>{source}
     </p>
@@ -909,6 +1108,8 @@ def build_wechat_html(article):
         line-height:1.7em;
         color:#999999;
         word-break:break-all;
+        width:100%;
+        box-sizing:border-box;
     ">
         <strong>原文：</strong>{original_link}
     </p>
@@ -922,11 +1123,16 @@ def build_wechat_html(article):
         if part
     )
 
+    # --------------------------------------------------------
     # 微信图文内容
+    # --------------------------------------------------------
+
     full_html = f"""
 <div style="
     margin:0;
     padding:0;
+    width:100%;
+    box-sizing:border-box;
     font-family:-apple-system,BlinkMacSystemFont,
     'Helvetica Neue','PingFang SC',
     'Microsoft YaHei',Arial,sans-serif;
@@ -934,6 +1140,8 @@ def build_wechat_html(article):
     font-size:14px;
     line-height:1.8em;
     letter-spacing:1px;
+    word-break:normal;
+    overflow-wrap:normal;
 ">
     {body}
 </div>
