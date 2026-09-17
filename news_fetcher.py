@@ -1104,8 +1104,24 @@ def download_cover(image_urls):
 
         try:
 
+            # DEV.to 的 media2 图片代理经常会把 format=auto 返回成 WebP。
+            # 微信封面这里最终必须使用真正的 JPEG，因此优先请求 JPEG 格式。
+            request_url = image_url
+            if (
+                "media2.dev.to" in request_url
+                and "format=auto" in request_url
+            ):
+                request_url = request_url.replace(
+                    "format=auto",
+                    "format=jpg",
+                    1,
+                )
+                print("检测到 DEV.to 图片代理的 format=auto")
+                print("改为请求 JPEG：")
+                print(request_url)
+
             request = urllib.request.Request(
-                image_url,
+                request_url,
                 headers={
                     "User-Agent": (
                         "Mozilla/5.0 "
@@ -1149,7 +1165,10 @@ def download_cover(image_urls):
 
             # ------------------------------------------------
             # 关键：
-            # 只接受真正的 JPEG
+            # 微信封面最终必须是真正的 JPEG。
+            #
+            # 如果 DEV.to 的图片代理仍然返回 WebP，
+            # 就跳过当前地址，继续尝试其他候选图片。
             # ------------------------------------------------
 
             if not is_jpeg(data):
@@ -1471,7 +1490,43 @@ def main():
     )
 
     # --------------------------------------------------------
-    # 8. 收集封面候选
+    # 8. 打印完整公众号文章
+    # --------------------------------------------------------
+
+    print("")
+    print("=" * 60)
+    print("完整公众号文章")
+    print("=" * 60)
+
+    print("")
+    print(f"标题：{article.get('title', '')}")
+
+    print("")
+    print("导语：")
+    print(article.get("lead", ""))
+
+    for index, section in enumerate(
+        article.get("sections", []),
+        1,
+    ):
+        print("")
+        print(f"{index:02d}｜{section.get('heading', '')}")
+
+        for paragraph in section.get("paragraphs", []):
+            print("")
+            print(paragraph)
+
+    print("")
+    print("写在最后：")
+    print(article.get("ending", ""))
+
+    print("")
+    print("=" * 60)
+    print("完整公众号文章打印结束")
+    print("=" * 60)
+
+    # --------------------------------------------------------
+    # 9. 收集封面候选
     # --------------------------------------------------------
 
     cover_urls = collect_cover_urls(
@@ -1479,7 +1534,7 @@ def main():
     )
 
     # --------------------------------------------------------
-    # 9. 下载真正的 JPEG 封面
+    # 10. 下载真正的 JPEG 封面
     # --------------------------------------------------------
 
     download_cover(
@@ -1487,7 +1542,7 @@ def main():
     )
 
     # --------------------------------------------------------
-    # 10. 保存 article.json
+    # 11. 保存 article.json
     # --------------------------------------------------------
 
     with open(
