@@ -25,6 +25,7 @@ RETRY_WAIT_SECONDS = 5
 
 ARTICLE_FILE = "article.json"
 COVER_FILE = "cover.jpg"
+PROCESSED_NEWS_FILE = "processed_news.json"
 
 
 # ============================================================
@@ -417,6 +418,9 @@ def fetch_dev_article_detail(article_id):
         or ""
     ).strip()
 
+    # 在截断正文之前判断，避免代码位于 14000 字符之后时被漏判。
+    source_has_code = source_contains_code_block(body_markdown) or source_contains_code_block(body_html)
+
     source_content = body_markdown
 
     if not source_content:
@@ -452,6 +456,7 @@ def fetch_dev_article_detail(article_id):
             source_content,
             MAX_SOURCE_ARTICLE_CHARS,
         ),
+        "source_has_code": source_has_code,
         "cover_image": cover_image,
         "social_image": normalize_url(
             article.get(
@@ -692,6 +697,89 @@ def extract_json_from_ai(text):
 
 
 # ============================================================
+# 已处理文章记录
+#
+# 只有微信公众号草稿成功创建后才会写入。
+# 这样如果微信接口失败，下次仍然可以重试同一篇。
+# ============================================================
+
+def load_processed_news():
+
+    if not os.path.exists(PROCESSED_NEWS_FILE):
+        return set()
+
+    try:
+        with open(PROCESSED_NEWS_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+
+        if isinstance(data, dict):
+            links = data.get("links", [])
+        elif isinstance(data, list):
+            links = data
+        else:
+            links = []
+
+        processed_links = {
+            normalize_url(link)
+            for link in links
+            if normalize_url(link)
+        }
+
+        # 兼容本次升级前已经生成过的 article.json：
+        # 至少把最近一篇已经生成的文章视为已处理，
+        # 避免升级后的第一次运行又选回同一篇。
+        if os.path.exists(ARTICLE_FILE):
+            try:
+                with open(ARTICLE_FILE, "r", encoding="utf-8") as f:
+                    last_article = json.load(f)
+
+                last_link = normalize_url(
+                    last_article.get("original_link", "")
+                    if isinstance(last_article, dict)
+                    else ""
+                )
+
+                if last_link:
+                    processed_links.add(last_link)
+                    print(
+                        "已将 article.json 中最近一篇文章加入已处理记录：",
+                        last_link
+                    )
+
+            except Exception as e:
+                print(
+                    "读取 article.json 最近文章失败：",
+                    str(e)
+                )
+
+        return processed_links
+
+    except Exception as e:
+        print("读取已处理文章记录失败：", str(e))
+        print("将按空记录继续运行。")
+        return set()
+
+
+def filter_unprocessed_news(news_list, processed_links):
+
+    result = []
+
+    for item in news_list:
+        link = normalize_url(item.get("link", ""))
+
+        if not link:
+            continue
+
+        if link in processed_links:
+            print("跳过已处理文章：", item.get("title", ""))
+            continue
+
+        result.append(item)
+
+    return result
+
+
+# ============================================================
 # AI 筛选
 # ============================================================
 
@@ -922,6 +1010,104 @@ def clean_code_language(language):
 
 
 # ============================================================
+# 判断原文是否存在真正的代码块
+#
+# 单反引号 inline code 不算代码块。
+# 只识别 Markdown fenced code、HTML pre/code、
+# 以及连续的 Markdown 缩进代码块。
+# ============================================================
+
+def source_contains_code_block(source_content):
+
+    if not source_content:
+        return False
+
+    text = str(source_content)
+
+    if re.search(
+        r"(?ms)^\s*```(?:[\w+#.-]+)?\s*$.*?^\s*```\s*$",
+        text,
+    ):
+        return True
+
+    if re.search(
+        r"<pre\b[^>]*>.*?</pre\s*>",
+        text,
+        flags=re.IGNORECASE | re.DOTALL,
+    ):
+        return True
+
+    if re.search(
+        r"<code\b[^>]*>.*?</code\s*>",
+        text,
+        flags=re.IGNORECASE | re.DOTALL,
+    ):
+        return True
+
+    consecutive = 0
+    for line in text.splitlines():
+        if re.match(r"^    \S+", line):
+            consecutive += 1
+            if consecutive >= 2:
+                return True
+        elif line.strip():
+            consecutive = 0
+
+    return False
+
+
+def enforce_code_block_source_rule(article, source_has_code):
+    """原文没有代码块时，程序强制清空 AI 返回的 code_blocks。"""
+
+    if not isinstance(article, dict):
+        return article
+
+    sections = article.get("sections", [])
+
+    if not isinstance(sections, list):
+        return article
+
+    if not source_has_code:
+
+        removed = 0
+
+        for section in sections:
+            if not isinstance(section, dict):
+                continue
+
+            code_blocks = section.get("code_blocks", [])
+
+            if isinstance(code_blocks, list):
+                removed += len(code_blocks)
+
+            section["code_blocks"] = []
+
+        if removed:
+            print(
+                "原文没有代码块，已强制清空 AI 生成的 "
+                f"{removed} 个代码块。"
+            )
+        else:
+            print("原文没有代码块，代码示例：0")
+
+    else:
+        total = 0
+        for section in sections:
+            if not isinstance(section, dict):
+                continue
+            code_blocks = section.get("code_blocks", [])
+            if isinstance(code_blocks, list):
+                total += len(code_blocks)
+
+        print(
+            "检测到原文存在代码块，"
+            f"AI 返回代码块：{total} 个。"
+        )
+
+    return article
+
+
+# ============================================================
 # AI 生成公众号文章
 # ============================================================
 
@@ -951,6 +1137,16 @@ def ai_generate_article(news):
         "link",
         "",
     )
+
+    source_has_code = news.get(
+        "source_has_code",
+        None,
+    )
+
+    if source_has_code is None:
+        source_has_code = source_contains_code_block(
+            source_content
+        )
 
     pub_date = news.get(
         "pubDate",
@@ -1030,8 +1226,12 @@ web前端开发之旅
 
 特别是：
 
-如果原文存在能够帮助读者理解核心技术的代码示例，
-必须优先保留至少 1 个最有代表性的代码示例。
+只有当 source_content 中确实存在代码块时，才允许生成 code_blocks。
+
+如果原文没有代码块：
+- code_blocks 必须严格返回 []
+- 不允许为了增强文章可读性而补充示例代码
+- 不允许根据自己的知识创造任何代码
 
 如果原文存在多个重要代码示例，
 可以选择 1～3 个最核心的代码示例。
@@ -1218,6 +1418,11 @@ web前端开发之旅
     ensure_ascii=False,
     indent=2
 )}
+
+程序预先检测结果：
+原文是否存在代码块：{"是" if source_has_code else "否"}
+
+如果检测结果为“否”，必须返回 code_blocks: []。
 """
 
     result = call_ai(
@@ -1236,6 +1441,12 @@ web前端开发之旅
 
     article = json.loads(
         result
+    )
+
+    # 程序级硬校验：原文没有代码块时，AI 返回的代码一律丢弃。
+    article = enforce_code_block_source_rule(
+        article,
+        source_has_code,
     )
 
     title = clean_text(
@@ -1923,11 +2134,36 @@ def main():
         )
 
     # --------------------------------------------------------
-    # 5. AI 筛选
+    # 5. 排除已经成功进入微信公众号草稿箱的文章
+    # --------------------------------------------------------
+
+    processed_links = load_processed_news()
+
+    print(
+        f"已处理文章数量：{len(processed_links)}"
+    )
+
+    unprocessed_news = filter_unprocessed_news(
+        all_news,
+        processed_links,
+    )
+
+    print(
+        f"未处理文章数量：{len(unprocessed_news)}"
+    )
+
+    if not unprocessed_news:
+        raise RuntimeError(
+            "当前抓到的文章全部已经处理过，"
+            "本次不重复生成公众号文章。"
+        )
+
+    # --------------------------------------------------------
+    # 6. AI 筛选
     # --------------------------------------------------------
 
     selected_news = ai_select_news(
-        all_news
+        unprocessed_news
     )
 
     print("")
@@ -1980,6 +2216,11 @@ def main():
     selected_news["source_content"] = detail.get(
         "source_content",
         "",
+    )
+
+    selected_news["source_has_code"] = detail.get(
+        "source_has_code",
+        False,
     )
 
     if detail.get(
