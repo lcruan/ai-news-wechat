@@ -17,6 +17,8 @@ WECHAT_APP_SECRET = os.environ.get("WECHAT_APP_SECRET")
 WECHAT_API_BASE = "https://api.weixin.qq.com"
 
 ARTICLE_FILE = "article.json"
+PROCESSED_NEWS_FILE = "processed_news.json"
+MAX_PROCESSED_NEWS = 200
 
 # 你上传到 GitHub 仓库根目录的封面
 COVER_IMAGE = "cover.jpg"
@@ -2268,6 +2270,82 @@ def upload_cover_image(
 
 
 # ============================================================
+# 记录已经成功进入微信公众号草稿箱的文章
+#
+# 只有 draft/add 成功后才记录。
+# news_fetcher.py 下次运行会读取这个文件并跳过这些链接。
+# ============================================================
+
+def record_processed_news(article):
+
+    link = str(
+        article.get(
+            "original_link",
+            "",
+        )
+        or ""
+    ).strip()
+
+    if not link:
+        print("警告：文章没有 original_link，无法记录已处理状态。")
+        return
+
+    links = []
+
+    if os.path.exists(PROCESSED_NEWS_FILE):
+        try:
+            with open(
+                PROCESSED_NEWS_FILE,
+                "r",
+                encoding="utf-8",
+            ) as f:
+                data = json.load(f)
+
+            if isinstance(data, dict):
+                links = data.get("links", [])
+            elif isinstance(data, list):
+                links = data
+
+        except Exception as e:
+            print(
+                "读取已处理文章记录失败，将重新建立记录：",
+                str(e)
+            )
+
+    links = [
+        str(item).strip()
+        for item in links
+        if str(item).strip()
+    ]
+
+    if link not in links:
+        links.append(link)
+
+    # 只保留最近 200 篇，避免文件无限增长。
+    links = links[-MAX_PROCESSED_NEWS:]
+
+    with open(
+        PROCESSED_NEWS_FILE,
+        "w",
+        encoding="utf-8",
+    ) as f:
+
+        json.dump(
+            {"links": links},
+            f,
+            ensure_ascii=False,
+            indent=2,
+        )
+
+    print(
+        f"已记录处理文章：{link}"
+    )
+    print(
+        f"累计已处理文章：{len(links)} 篇"
+    )
+
+
+# ============================================================
 # 创建微信公众号草稿
 # ============================================================
 
@@ -2391,6 +2469,9 @@ def add_draft(
     )
 
     print("=" * 50)
+
+    # 只有 draft/add 真正成功后，才把原文链接写入已处理记录。
+    record_processed_news(article)
 
     return media_id
 
