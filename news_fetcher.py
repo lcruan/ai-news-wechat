@@ -421,6 +421,12 @@ def fetch_dev_article_detail(article_id):
     # 在截断正文之前判断，避免代码位于 14000 字符之后时被漏判。
     source_has_code = source_contains_code_block(body_markdown) or source_contains_code_block(body_html)
 
+    # 同样在截断前提取原文代码，保证最终使用的是完整原文示例。
+    source_code_blocks = extract_source_code_blocks(body_markdown)
+
+    if not source_code_blocks:
+        source_code_blocks = extract_source_code_blocks(body_html)
+
     source_content = body_markdown
 
     if not source_content:
@@ -457,6 +463,7 @@ def fetch_dev_article_detail(article_id):
             MAX_SOURCE_ARTICLE_CHARS,
         ),
         "source_has_code": source_has_code,
+        "source_code_blocks": source_code_blocks,
         "cover_image": cover_image,
         "social_image": normalize_url(
             article.get(
@@ -1010,6 +1017,100 @@ def clean_code_language(language):
 
 
 # ============================================================
+# 提取原文中的真实代码块
+#
+# 最终文章中的代码直接来自原文，不让 AI 改写。
+# ============================================================
+
+def extract_source_code_blocks(source_content):
+
+    if not source_content:
+        return []
+
+    text = str(source_content)
+    results = []
+
+    # Markdown fenced code
+    fenced_pattern = re.compile(
+        r"(?ms)^\s*```([^\n`]*)\n(.*?)^\s*```\s*$"
+    )
+
+    for match in fenced_pattern.finditer(text):
+
+        language = clean_code_language(
+            match.group(1).strip() or "text"
+        )
+
+        code = clean_code_block(
+            match.group(2)
+        )
+
+        if code:
+            results.append({
+                "language": language,
+                "code": code,
+            })
+
+    # HTML <pre> / <pre><code> code
+    html_pattern = re.compile(
+        r"(?is)<pre\b([^>]*)>(.*?)</pre\s*>"
+    )
+
+    for match in html_pattern.finditer(text):
+
+        attrs = match.group(1) or ""
+        inner = match.group(2) or ""
+
+        language_match = re.search(
+            r"(?:language|lang)-([a-zA-Z0-9_+#.-]+)",
+            attrs + " " + inner[:300],
+            flags=re.IGNORECASE,
+        )
+
+        language = clean_code_language(
+            language_match.group(1)
+            if language_match
+            else "text"
+        )
+
+        inner = re.sub(
+            r"(?is)^\s*<code\b[^>]*>",
+            "",
+            inner,
+        )
+
+        inner = re.sub(
+            r"(?is)</code\s*>\s*$",
+            "",
+            inner,
+        )
+
+        inner = re.sub(
+            r"<[^>]+>",
+            "",
+            inner,
+        )
+
+        code = clean_code_block(
+            html.unescape(inner)
+        )
+
+        if not code:
+            continue
+
+        if not any(
+            item["code"] == code
+            for item in results
+        ):
+            results.append({
+                "language": language,
+                "code": code,
+            })
+
+    return results
+
+
+# ============================================================
 # 判断原文是否存在真正的代码块
 #
 # 单反引号 inline code 不算代码块。
@@ -1103,6 +1204,103 @@ def enforce_code_block_source_rule(article, source_has_code):
             "检测到原文存在代码块，"
             f"AI 返回代码块：{total} 个。"
         )
+
+    return article
+
+
+# ============================================================
+# 强制使用原文代码
+#
+# AI 只负责决定代码放在哪个 section。
+# code 和 language 最终直接取自原文。
+# ============================================================
+
+def enforce_original_code_blocks(
+    article,
+    source_code_blocks,
+    source_has_code,
+):
+
+    if not isinstance(article, dict):
+        return article
+
+    sections = article.get("sections", [])
+
+    if not isinstance(sections, list):
+        return article
+
+    if not source_has_code or not source_code_blocks:
+
+        for section in sections:
+            if isinstance(section, dict):
+                section["code_blocks"] = []
+
+        return article
+
+    for section in sections:
+
+        if not isinstance(section, dict):
+            continue
+
+        code_blocks = section.get("code_blocks", [])
+
+        if not isinstance(code_blocks, list):
+            section["code_blocks"] = []
+            continue
+
+        exact_blocks = []
+
+        for code_block in code_blocks:
+
+            if not isinstance(code_block, dict):
+                continue
+
+            source_index = code_block.get(
+                "source_code_index",
+                None,
+            )
+
+            try:
+                source_index = int(source_index)
+            except (TypeError, ValueError):
+                source_index = None
+
+            selected = None
+
+            if (
+                source_index is not None
+                and 1 <= source_index <= len(source_code_blocks)
+            ):
+                selected = source_code_blocks[source_index - 1]
+
+            # 兼容模型没有返回索引、但原样返回了代码的情况。
+            if selected is None:
+                ai_code = clean_code_block(
+                    code_block.get("code", "")
+                )
+
+                for source_block in source_code_blocks:
+                    if ai_code and ai_code == source_block["code"]:
+                        selected = source_block
+                        break
+
+            # 只有一个原文代码块时，直接使用它。
+            if selected is None and len(source_code_blocks) == 1:
+                selected = source_code_blocks[0]
+
+            # 无法确认对应原文代码时，宁可不显示，也不使用 AI 自造代码。
+            if selected is None:
+                continue
+
+            exact_blocks.append({
+                "language": selected.get("language", "text"),
+                "caption": clean_text(
+                    code_block.get("caption", "")
+                ),
+                "code": selected.get("code", ""),
+            })
+
+        section["code_blocks"] = exact_blocks
 
     return article
 
@@ -1245,14 +1443,13 @@ web前端开发之旅
 
 如果原文存在代码：
 
-1. 只能使用原文中真实存在的代码或代码片段。
-2. 不允许根据自己的知识凭空创造代码。
-3. 可以删除原文代码中与主题无关的部分。
-4. 可以适当整理缩进和格式。
-5. 可以轻微调整变量名，但不得改变代码的技术含义。
-6. 不允许为了让代码“看起来更完整”而添加原文没有的功能。
-7. 如果原文代码存在明显的省略部分，可以使用注释说明省略，
-   不要自行补全。
+1. 只能使用原文中真实存在的代码。
+2. 不允许自己重写、改写、补全或创造代码。
+3. 不允许修改变量名、API、配置、函数名或代码逻辑。
+4. 程序已经提供 source_code_blocks，其中的 code 是原文代码。
+5. 需要放代码时，必须通过 source_code_index 指向对应的原文代码。
+6. code 字段尽量原样返回；程序最终会直接使用原文 code。
+7. 如果某段原文代码与当前小节无关，就不要引用。
 8. 每个代码块必须说明语言类型，例如：
    javascript、typescript、vue、html、css、json、bash 等。
 9. 代码块必须放到 JSON 的 code_blocks 中。
@@ -1391,9 +1588,10 @@ web前端开发之旅
       ],
       "code_blocks": [
         {{
+          "source_code_index": 1,
           "language": "javascript",
           "caption": "这段代码用于做什么",
-          "code": "原文中的核心代码"
+          "code": "原文中的代码，不要改写"
         }}
       ]
     }}
@@ -1418,6 +1616,9 @@ web前端开发之旅
     ensure_ascii=False,
     indent=2
 )}
+
+其中 source_code_blocks 是从原文直接提取的真实代码。
+如果需要代码，必须引用其中已有代码，不能自己生成。
 
 程序预先检测结果：
 原文是否存在代码块：{"是" if source_has_code else "否"}
@@ -1446,6 +1647,13 @@ web前端开发之旅
     # 程序级硬校验：原文没有代码块时，AI 返回的代码一律丢弃。
     article = enforce_code_block_source_rule(
         article,
+        source_has_code,
+    )
+
+    # 程序级硬校验：最终代码必须直接来自原文。
+    article = enforce_original_code_blocks(
+        article,
+        news.get("source_code_blocks", []),
         source_has_code,
     )
 
@@ -1563,6 +1771,16 @@ web前端开发之旅
                     )
                 )
 
+                try:
+                    source_code_index = int(
+                        code_block.get(
+                            "source_code_index",
+                            0,
+                        )
+                    )
+                except (TypeError, ValueError):
+                    source_code_index = 0
+
                 caption = clean_text(
                     code_block.get(
                         "caption",
@@ -1581,6 +1799,7 @@ web前端开发之旅
                     continue
 
                 cleaned_code_blocks.append({
+                    "source_code_index": source_code_index,
                     "language": language,
                     "caption": caption,
                     "code": code,
@@ -2221,6 +2440,11 @@ def main():
     selected_news["source_has_code"] = detail.get(
         "source_has_code",
         False,
+    )
+
+    selected_news["source_code_blocks"] = detail.get(
+        "source_code_blocks",
+        [],
     )
 
     if detail.get(
