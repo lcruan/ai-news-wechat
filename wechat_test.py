@@ -201,8 +201,9 @@ def clean_section_heading(
     # 01、标题
     #
     heading = re.sub(
-        r"^(?:0?[1-9]|1[0-9]|20)"
-        r"\s*(?:[：:、.\-—–])?\s*",
+        r"^\s*[（(]?\s*(?:0?[1-9]|1[0-9]|20)"
+        r"\s*[)）]?\s*"
+        r"(?:[：:、.．。\-—–])?\s*",
         "",
         heading
     ).strip()
@@ -213,18 +214,31 @@ def clean_section_heading(
         number_text = f"{number:02d}"
 
         heading = re.sub(
-            rf"^{re.escape(number_text)}"
-            rf"\s*(?:[：:、.\-—–])?\s*",
+            rf"^\s*[（(]?{re.escape(number_text)}"
+            rf"\s*[)）]?\s*"
+            rf"(?:[：:、.．。\-—–])?\s*",
             "",
             heading
         ).strip()
 
         heading = re.sub(
-            rf"^{number}"
-            rf"\s*(?:[：:、.\-—–])?\s*",
+            rf"^\s*[（(]?{number}"
+            rf"\s*[)）]?\s*"
+            rf"(?:[：:、.．。\-—–])?\s*",
             "",
             heading
         ).strip()
+
+    # 章节标题不需要额外的括号式副标题。
+    # 例如：
+    # “带类型泛型的 as 组件（强类型安全）”
+    # 统一保留为：
+    # “带类型泛型的 as 组件”
+    heading = re.sub(
+        r"\s*[（(][^（）()]{1,40}[）)]\s*$",
+        "",
+        heading
+    ).strip()
 
     return heading
 
