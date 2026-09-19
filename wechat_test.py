@@ -166,6 +166,9 @@ def escape_text(text):
 
 # ============================================================
 # 清洗章节标题
+#
+# 防止 AI 自己把 01 / 02 / 03 / 04 写进标题。
+# 编号统一由 Python 排版组件负责。
 # ============================================================
 
 def clean_section_heading(
@@ -188,6 +191,15 @@ def clean_section_heading(
     ).strip()
 
     # 去掉开头的章节编号
+    #
+    # 支持：
+    # 01 标题
+    # 01：标题
+    # 01 - 标题
+    # 01 — 标题
+    # 01. 标题
+    # 01、标题
+    #
     heading = re.sub(
         r"^\s*[（(]?\s*(?:0?[1-9]|1[0-9]|20)"
         r"\s*[)）]?\s*"
@@ -217,7 +229,11 @@ def clean_section_heading(
             heading
         ).strip()
 
-    # 去掉标题末尾括号式副标题
+    # 章节标题不需要额外的括号式副标题。
+    # 例如：
+    # “带类型泛型的 as 组件（强类型安全）”
+    # 统一保留为：
+    # “带类型泛型的 as 组件”
     heading = re.sub(
         r"\s*[（(][^（）()]{1,40}[）)]\s*$",
         "",
@@ -229,6 +245,12 @@ def clean_section_heading(
 
 # ============================================================
 # 清洗正文开头错误出现的章节编号
+#
+# 例如：
+# 01 近日，社交平台……
+#
+# 自动变成：
+# 近日，社交平台……
 # ============================================================
 
 def clean_section_paragraph(
@@ -245,6 +267,7 @@ def clean_section_paragraph(
 
     number_text = f"{number:02d}"
 
+    # 只处理正文最开始的编号
     text = re.sub(
         rf"^{re.escape(number_text)}"
         r"\s*(?:[：:、.\-—–])?\s*",
@@ -270,7 +293,8 @@ def clean_inline_markdown(text):
 
     text = str(text or "")
 
-    # Markdown 链接
+    # Markdown 链接：
+    # [文字](https://xxx)
     text = re.sub(
         r"\[([^\]]+)\]\([^)]+\)",
         r"\1",
@@ -309,7 +333,7 @@ def clean_inline_markdown(text):
 
 
 # ============================================================
-# 普通段落
+# 处理普通段落中的加粗
 # ============================================================
 
 def render_paragraph(text):
@@ -319,6 +343,7 @@ def render_paragraph(text):
     if not text:
         return ""
 
+    # 先保护 Markdown 加粗
     placeholders = []
 
     def replace_bold(match):
@@ -331,7 +356,9 @@ def render_paragraph(text):
             )
         )
 
-        return f"___BOLD_{index}___"
+        return (
+            f"___BOLD_{index}___"
+        )
 
     text = re.sub(
         r"\*\*(.*?)\*\*",
@@ -339,10 +366,12 @@ def render_paragraph(text):
         text
     )
 
+    # 普通文本 HTML 转义
     text = escape_text(
         text
     )
 
+    # 恢复加粗
     for index, value in enumerate(
         placeholders
     ):
@@ -352,12 +381,14 @@ def render_paragraph(text):
             f"<strong>{value}</strong>"
         )
 
+    # 清理 Markdown 链接
     text = re.sub(
         r"\[([^\]]+)\]\([^)]+\)",
         r"\1",
         text
     )
 
+    # 清理单星号
     text = re.sub(
         r"(?<!\*)\*([^*]+)\*(?!\*)",
         r"\1",
@@ -383,6 +414,8 @@ def render_paragraph(text):
 
 # ============================================================
 # 代码语言名称
+#
+# 将 AI 返回的语言名称统一成公众号中显示的名称。
 # ============================================================
 
 def clean_code_language(language):
@@ -452,44 +485,16 @@ def clean_code_language(language):
 
 
 # ============================================================
-# 代码安全渲染
+# 静态代码语法高亮
 #
-# 重要：
+# 注意：
+# 这里不依赖 JavaScript / highlight.js / Prism.js。
 #
-# 这里不再做复杂的正则语法高亮。
+# Python 在生成微信公众号 HTML 时，
+# 直接把代码转换成带颜色的 span。
 #
-# 原来的 highlight_code() 会：
-#
-# 1. HTML 转义
-# 2. 加 token
-# 3. 匹配数字
-# 4. 匹配关键词
-# 5. 匹配函数
-# 6. 匹配操作符
-# 7. 再恢复 token
-#
-# 多轮正则处理已经生成的 HTML，
-# 很容易破坏 span 标签。
-#
-# 公众号文章首先必须保证代码内容准确、
-# HTML 结构稳定。
-#
-# 所以现在：
-#
-# 原始代码
-#     ↓
-# HTML escape
-#     ↓
-# <pre><code>
-#
-# 完整保留。
-#
-# 不修改代码字符。
-# 不改变缩进。
-# 不改变换行。
-# 不改变括号。
-# 不改变 HTML 标签。
-# 不改变 JS / TS / CSS 语法。
+# 因此微信公众号打开文章时，
+# 不需要额外加载任何 JS。
 # ============================================================
 
 def highlight_code(
@@ -497,29 +502,12 @@ def highlight_code(
     language
 ):
 
-    code = str(
-        code or ""
-    )
-
-    if not code:
-        return ""
-
-    # --------------------------------------------------------
-    # 直接进行 HTML 转义。
-    #
-    # 例如：
-    #
-    # <div>
-    #
-    # 会变成：
-    #
-    # &lt;div&gt;
-    #
-    # 防止代码本身被浏览器当成真正 HTML。
-    # --------------------------------------------------------
-
+    # 微信公众号对复杂的静态语法高亮兼容性并不稳定。
+    # 这里故意不再给代码内容插入任何 span / HTML 标签，
+    # 只做 HTML 转义，确保代码字符、缩进、换行 100% 原样保留。
+    # 代码块的深色编辑器样式仍由 render_code_block() 控制。
     return html.escape(
-        code,
+        str(code or ""),
         quote=False
     )
 
@@ -527,34 +515,22 @@ def highlight_code(
 # ============================================================
 # 代码块
 #
-# 重点：
+# 固定使用类似现代代码编辑器的深色样式：
 #
-# PC：
-# 正常显示完整代码。
+# ┌─────────────────────────────┐
+# │ ● ● ●       JavaScript      │
+# ├─────────────────────────────┤
+# │ const app = createApp(App)  │
+# │ app.mount('#app')           │
+# └─────────────────────────────┘
 #
-# 手机：
-# 超宽代码横向滚动。
+# 样式由 Python 固定控制。
+# AI 只提供：
+# language / caption / code
 #
-# 不再强制：
-#
-# word-break:break-all
-# overflow-wrap:break-word
-# white-space:pre-wrap
-#
-# 因此：
-#
-# const myVariable = ...
-#
-# 不会被拆成：
-#
-# const myVari
-# able = ...
-#
-# HTML：
-#
-# <div class="container">
-#
-# 也不会被任意拆开。
+# 新增：
+# 静态语法高亮。
+# 不依赖微信端 JS。
 # ============================================================
 
 def render_code_block(code_block):
@@ -573,9 +549,7 @@ def render_code_block(code_block):
     if code is None:
         code = ""
 
-    code = str(
-        code
-    )
+    code = str(code)
 
     if not code.strip():
         return ""
@@ -594,10 +568,8 @@ def render_code_block(code_block):
         ) or ""
     ).strip()
 
-    # --------------------------------------------------------
-    # 安全代码渲染
-    # --------------------------------------------------------
-
+    # 代码内容只做 HTML 转义，不做任何静态 span 高亮。
+    # 这样可以避免微信公众号二次解析/缓存后破坏代码结构。
     safe_code = highlight_code(
         code,
         language
@@ -652,6 +624,7 @@ def render_code_block(code_block):
         background-color:#21252b;
         box-sizing:border-box;
         border-bottom:1px solid #3a3f4b;
+        position:relative;
     ">
 
         <span style="
@@ -696,14 +669,7 @@ def render_code_block(code_block):
 
     </section>
 
-
-    <!--
-        代码滚动区域
-
-        注意：
-        这里允许横向滚动。
-        不强制折行。
-    -->
+    <!-- 真正负责横向滚动的代码容器 -->
     <section style="
         margin:0;
         padding:0;
@@ -712,6 +678,7 @@ def render_code_block(code_block):
         overflow-x:auto;
         overflow-y:hidden;
         -webkit-overflow-scrolling:touch;
+        background-color:#282c34;
     ">
 
         <pre style="
@@ -722,38 +689,29 @@ def render_code_block(code_block):
             box-sizing:border-box;
             background-color:#282c34;
             color:#abb2bf;
-            font-family:
-                Menlo,
-                Monaco,
-                Consolas,
-                'Courier New',
-                monospace;
+            font-family:Menlo,Monaco,Consolas,'Courier New',monospace;
             font-size:13px;
             line-height:1.7em;
             letter-spacing:0;
-            white-space:pre !important;
-            word-break:normal !important;
-            overflow-wrap:normal !important;
+            white-space:pre;
+            word-break:normal;
+            overflow-wrap:normal;
             tab-size:2;
+            -webkit-text-size-adjust:100%;
         "><code style="
             margin:0;
             padding:0;
             background-color:transparent;
             color:#abb2bf;
-            font-family:
-                Menlo,
-                Monaco,
-                Consolas,
-                'Courier New',
-                monospace;
+            font-family:Menlo,Monaco,Consolas,'Courier New',monospace;
             font-size:13px;
             line-height:1.7em;
-            white-space:pre !important;
-            word-break:normal !important;
-            overflow-wrap:normal !important;
+            letter-spacing:0;
+            white-space:pre;
+            word-break:normal;
+            overflow-wrap:normal;
+            tab-size:2;
             display:block;
-            width:max-content;
-            min-width:100%;
         ">{safe_code}</code></pre>
 
     </section>
@@ -764,6 +722,12 @@ def render_code_block(code_block):
 
 # ============================================================
 # 顶部导语框
+#
+# 固定模板：
+# 左上角黄色三角
+# 右下角蓝色三角
+# 蓝色边框
+# 浅蓝背景
 # ============================================================
 
 def render_lead(lead):
@@ -775,10 +739,12 @@ def render_lead(lead):
     if not lead:
         return ""
 
+    # 清理 Markdown
     lead = clean_inline_markdown(
         lead
     )
 
+    # HTML 转义
     lead = escape_text(
         lead
     )
@@ -794,6 +760,7 @@ def render_lead(lead):
     overflow:hidden;
 ">
 
+    <!-- 左上角黄色三角 -->
     <section style="
         position:absolute;
         top:-1px;
@@ -820,6 +787,7 @@ def render_lead(lead):
         {lead}
     </p>
 
+    <!-- 右下角蓝色三角 -->
     <section style="
         position:absolute;
         right:-1px;
@@ -838,6 +806,12 @@ def render_lead(lead):
 
 # ============================================================
 # 章节标题
+#
+# 固定模板：
+#
+# [蓝色折角编号标签] [浅蓝标题框] [黄色三角]
+#
+# 编号只在左侧标签中出现。
 # ============================================================
 
 def render_section_heading(
@@ -866,6 +840,7 @@ def render_section_heading(
     box-sizing:border-box;
 ">
 
+    <!-- 左侧蓝色折角编号标签 -->
     <section style="
         width:60px;
         min-width:60px;
@@ -876,6 +851,7 @@ def render_section_heading(
         overflow:hidden;
     ">
 
+        <!-- 蓝色折角主体 -->
         <section style="
             position:absolute;
             left:0;
@@ -912,6 +888,7 @@ def render_section_heading(
     </section>
 
 
+    <!-- 中间标题区域 -->
     <section style="
         flex:1;
         min-width:0;
@@ -933,6 +910,7 @@ def render_section_heading(
     </section>
 
 
+    <!-- 右侧黄色三角 -->
     <section style="
         width:25px;
         min-width:25px;
@@ -1098,6 +1076,10 @@ def render_section(
 
     html_parts = []
 
+    # --------------------------------------------------------
+    # 章节标题
+    # --------------------------------------------------------
+
     html_parts.append(
         render_section_heading(
             number,
@@ -1108,6 +1090,10 @@ def render_section(
         )
     )
 
+    # --------------------------------------------------------
+    # 正文段落
+    # --------------------------------------------------------
+
     paragraphs = section.get(
         "paragraphs",
         []
@@ -1115,6 +1101,7 @@ def render_section(
 
     for paragraph in paragraphs:
 
+        # 清理 AI 错误输出的章节编号
         paragraph = clean_section_paragraph(
             paragraph,
             number
@@ -1128,6 +1115,10 @@ def render_section(
             html_parts.append(
                 paragraph_html
             )
+
+    # --------------------------------------------------------
+    # 小标题
+    # --------------------------------------------------------
 
     subsections = section.get(
         "subsections",
@@ -1149,6 +1140,10 @@ def render_section(
             )
         )
 
+    # --------------------------------------------------------
+    # 金句
+    # --------------------------------------------------------
+
     highlight = section.get(
         "highlight",
         ""
@@ -1162,6 +1157,10 @@ def render_section(
             )
         )
 
+    # --------------------------------------------------------
+    # 列表
+    # --------------------------------------------------------
+
     items = section.get(
         "list",
         []
@@ -1174,6 +1173,22 @@ def render_section(
                 items
             )
         )
+
+    # --------------------------------------------------------
+    # 代码块
+    #
+    # article.json：
+    #
+    # "code_blocks": [
+    #     {
+    #         "language": "javascript",
+    #         "caption": "示例代码",
+    #         "code": "const app = ..."
+    #     }
+    # ]
+    #
+    # 样式统一由 Python 控制。
+    # --------------------------------------------------------
 
     code_blocks = section.get(
         "code_blocks",
@@ -1211,9 +1226,37 @@ def render_section(
 
 # ============================================================
 # 处理 ending
+#
+# 兼容：
+#
+# 1. ending 是字符串
+# 2. ending 是正常段落数组
+# 3. ending 被 AI 错误拆成单字数组
+#
+# 第 3 种情况：
+#
+# ["这", "篇", "文", "章"]
+#
+# 自动恢复成：
+#
+# ["这篇文章"]
+#
+# 防止微信公众号出现：
+#
+# 这
+# 篇
+# 文
+# 章
+#
+# 一字一行。
 # ============================================================
 
 def normalize_ending(ending):
+
+    # --------------------------------------------------------
+    # 情况 1：
+    # ending 直接是字符串
+    # --------------------------------------------------------
 
     if isinstance(
         ending,
@@ -1225,6 +1268,8 @@ def normalize_ending(ending):
         if not ending:
             return []
 
+        # 如果字符串内部本身有换行，
+        # 按段落拆分。
         paragraphs = re.split(
             r"\n+",
             ending
@@ -1235,6 +1280,11 @@ def normalize_ending(ending):
             for paragraph in paragraphs
             if paragraph.strip()
         ]
+
+    # --------------------------------------------------------
+    # 情况 2：
+    # ending 不是数组
+    # --------------------------------------------------------
 
     if not isinstance(
         ending,
@@ -1250,6 +1300,10 @@ def normalize_ending(ending):
 
         return [text] if text else []
 
+    # --------------------------------------------------------
+    # 去掉空内容
+    # --------------------------------------------------------
+
     ending = [
         str(item).strip()
         for item in ending
@@ -1258,6 +1312,19 @@ def normalize_ending(ending):
 
     if not ending:
         return []
+
+    # --------------------------------------------------------
+    # 情况 3：
+    #
+    # AI 错误地把一句话拆成了单字数组：
+    #
+    # ["这", "篇", "文", "章", "很", "重", "要"]
+    #
+    # 如果数组中的每一项都是单个字符，
+    # 说明它不是正常的段落数组。
+    #
+    # 这里把它重新拼接。
+    # --------------------------------------------------------
 
     if (
         len(ending) > 1
@@ -1270,6 +1337,10 @@ def normalize_ending(ending):
         return [
             "".join(ending)
         ]
+
+    # --------------------------------------------------------
+    # 正常段落数组
+    # --------------------------------------------------------
 
     return ending
 
@@ -1318,11 +1389,19 @@ def build_wechat_html(article):
 
     html_parts = []
 
+    # --------------------------------------------------------
+    # 导语
+    # --------------------------------------------------------
+
     html_parts.append(
         render_lead(
             lead
         )
     )
+
+    # --------------------------------------------------------
+    # 01～04
+    # --------------------------------------------------------
 
     for index, section in enumerate(
         sections[:4],
@@ -1336,12 +1415,22 @@ def build_wechat_html(article):
             )
         )
 
+    # --------------------------------------------------------
+    # 05 写在最后
+    # --------------------------------------------------------
+
     html_parts.append(
         render_section_heading(
             5,
             "写在最后"
         )
     )
+
+    # --------------------------------------------------------
+    # 规范化 ending
+    #
+    # 防止 ending 被错误拆成单字数组。
+    # --------------------------------------------------------
 
     ending_paragraphs = normalize_ending(
         ending
@@ -1357,6 +1446,10 @@ def build_wechat_html(article):
             html_parts.append(
                 paragraph_html
             )
+
+    # --------------------------------------------------------
+    # 来源
+    # --------------------------------------------------------
 
     html_parts.append(
         f"""
@@ -1398,6 +1491,10 @@ def build_wechat_html(article):
         for part in html_parts
         if part
     )
+
+    # --------------------------------------------------------
+    # 微信图文内容
+    # --------------------------------------------------------
 
     full_html = f"""
 <div style="
@@ -1555,6 +1652,9 @@ def upload_cover_image(
 
 # ============================================================
 # 记录已经成功进入微信公众号草稿箱的文章
+#
+# 只有 draft/add 成功后才记录。
+# news_fetcher.py 下次运行会读取这个文件并跳过这些链接。
 # ============================================================
 
 def record_processed_news(article):
@@ -1568,44 +1668,26 @@ def record_processed_news(article):
     ).strip()
 
     if not link:
-        print(
-            "警告：文章没有 original_link，"
-            "无法记录已处理状态。"
-        )
+        print("警告：文章没有 original_link，无法记录已处理状态。")
         return
 
     links = []
 
-    if os.path.exists(
-        PROCESSED_NEWS_FILE
-    ):
+    if os.path.exists(PROCESSED_NEWS_FILE):
         try:
-
             with open(
                 PROCESSED_NEWS_FILE,
                 "r",
                 encoding="utf-8",
             ) as f:
-
                 data = json.load(f)
 
-            if isinstance(
-                data,
-                dict
-            ):
-                links = data.get(
-                    "links",
-                    []
-                )
-
-            elif isinstance(
-                data,
-                list
-            ):
+            if isinstance(data, dict):
+                links = data.get("links", [])
+            elif isinstance(data, list):
                 links = data
 
         except Exception as e:
-
             print(
                 "读取已处理文章记录失败，将重新建立记录：",
                 str(e)
@@ -1620,9 +1702,8 @@ def record_processed_news(article):
     if link not in links:
         links.append(link)
 
-    links = links[
-        -MAX_PROCESSED_NEWS:
-    ]
+    # 只保留最近 200 篇，避免文件无限增长。
+    links = links[-MAX_PROCESSED_NEWS:]
 
     with open(
         PROCESSED_NEWS_FILE,
@@ -1640,7 +1721,6 @@ def record_processed_news(article):
     print(
         f"已记录处理文章：{link}"
     )
-
     print(
         f"累计已处理文章：{len(links)} 篇"
     )
@@ -1668,6 +1748,8 @@ def add_draft(
         )
     ).strip()
 
+    # 最后保险：
+    # 防止 AI 标题残留 Markdown **
     title = re.sub(
         r"\*\*(.*?)\*\*",
         r"\1",
@@ -1769,11 +1851,8 @@ def add_draft(
 
     print("=" * 50)
 
-    # 只有 draft/add 真正成功后，
-    # 才把原文链接写入已处理记录。
-    record_processed_news(
-        article
-    )
+    # 只有 draft/add 真正成功后，才把原文链接写入已处理记录。
+    record_processed_news(article)
 
     return media_id
 
