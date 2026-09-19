@@ -1307,7 +1307,7 @@ def render_code_block(code_block):
         padding:0;
         width:100%;
         box-sizing:border-box;
-        overflow-x:auto;
+        overflow-x:hidden;
         overflow-y:hidden;
     ">
 
@@ -1327,9 +1327,10 @@ def render_code_block(code_block):
             font-size:13px;
             line-height:1.7em;
             letter-spacing:0;
-            white-space:pre;
-            word-break:normal;
-            overflow-wrap:normal;
+            white-space:pre-wrap !important;
+            word-break:break-all !important;
+            overflow-wrap:break-word !important;
+            max-width:100%;
             tab-size:2;
         "><code style="
             margin:0;
@@ -1344,7 +1345,11 @@ def render_code_block(code_block):
                 monospace;
             font-size:13px;
             line-height:1.7em;
-            white-space:pre;
+            white-space:pre-wrap !important;
+            word-break:break-all !important;
+            overflow-wrap:break-word !important;
+            max-width:100%;
+            display:block;
         ">{highlighted_code}</code></pre>
 
     </section>
