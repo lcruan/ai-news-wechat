@@ -10,6 +10,10 @@ on:
 permissions:
   contents: write
 
+concurrency:
+  group: ai-news-daily
+  cancel-in-progress: false
+
 jobs:
   ai-news:
     runs-on: self-hosted
@@ -17,6 +21,8 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Run AI news filter
         env:
@@ -33,12 +39,30 @@ jobs:
 
       - name: Save processed news history
         run: |
-          if [ -f processed_news.json ] && [ -n "$(git status --porcelain -- processed_news.json)" ]; then
-            git config user.name "github-actions[bot]"
-            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-            git add processed_news.json
-            git commit -m "chore: update processed news history"
-            git push origin "HEAD:${GITHUB_REF_NAME}"
-          else
-            echo "没有新的已处理文章记录需要提交。"
+          if [ ! -f processed_news.json ]; then
+            echo "没有找到 processed_news.json，跳过提交。"
+            exit 0
           fi
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          # -f 可以避免仓库 .gitignore 意外忽略 processed_news.json，
+          # 从而导致去重记录没有真正进入 Git。
+          git add -f processed_news.json
+
+          if git diff --cached --quiet -- processed_news.json; then
+            echo "processed_news.json 没有新的变化。"
+            exit 0
+          fi
+
+          echo "准备提交已处理文章记录："
+          cat processed_news.json
+
+          git commit -m "chore: update processed news history"
+
+          # 防止其他 workflow 同时更新 main 导致 push 被拒绝。
+          git fetch origin "${GITHUB_REF_NAME}"
+          git rebase "origin/${GITHUB_REF_NAME}"
+
+          git push origin "HEAD:${GITHUB_REF_NAME}"
