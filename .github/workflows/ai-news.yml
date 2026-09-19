@@ -79,6 +79,15 @@ jobs:
           unset GIT_WORK_TREE
 
           # ============================================================
+          # self-hosted Runner 可能没有自动设置 HOME
+          # Git --global 配置需要 HOME
+          # ============================================================
+          export HOME="/home/github-runner"
+
+          echo "当前 HOME："
+          echo "$HOME"
+
+          # ============================================================
           # 将当前 GitHub Actions 工作目录加入 Git 安全目录
           # 解决 self-hosted Runner 的 dubious ownership 问题
           # ============================================================
