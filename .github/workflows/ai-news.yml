@@ -40,29 +40,31 @@ jobs:
       - name: Save processed news history
         run: |
           # ============================================================
-          # 强制进入 GitHub Actions 当前仓库目录
-          # self-hosted Runner 上不要依赖默认工作目录
+          # self-hosted Runner 上不要依赖当前 shell 的 Git 工作目录
+          # 统一使用 git -C "$GITHUB_WORKSPACE"
           # ============================================================
-          cd "$GITHUB_WORKSPACE"
+
+          echo "GITHUB_WORKSPACE："
+          echo "$GITHUB_WORKSPACE"
 
           echo "当前工作目录："
           pwd
 
           echo "当前仓库目录内容："
-          ls -la
+          ls -la "$GITHUB_WORKSPACE"
 
           # ============================================================
           # 检查 processed_news.json
           # ============================================================
-          if [ ! -f processed_news.json ]; then
+          if [ ! -f "$GITHUB_WORKSPACE/processed_news.json" ]; then
             echo "没有找到 processed_news.json，跳过提交。"
             exit 0
           fi
 
           # ============================================================
-          # 检查 Git 仓库是否正常
+          # 检查 .git
           # ============================================================
-          if [ ! -d .git ]; then
+          if [ ! -d "$GITHUB_WORKSPACE/.git" ]; then
             echo "错误：$GITHUB_WORKSPACE 下没有找到 .git 目录。"
             echo "GitHub Actions checkout 可能没有正确完成。"
             exit 1
@@ -70,48 +72,86 @@ jobs:
 
           echo "Git 仓库检查通过。"
 
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          # ============================================================
+          # 清除可能影响 Git 判断仓库位置的环境变量
+          # ============================================================
+          unset GIT_DIR
+          unset GIT_WORK_TREE
 
           # ============================================================
-          # 先同步远程分支
+          # 确认 Git 能够识别仓库
           # ============================================================
-          echo "同步远程分支：${GITHUB_REF_NAME}"
-
-          git fetch origin "${GITHUB_REF_NAME}"
+          echo "Git 仓库根目录："
+          git -C "$GITHUB_WORKSPACE" rev-parse --show-toplevel
 
           # ============================================================
-          # 检查当前分支
+          # 配置 Git 用户
+          # ============================================================
+          echo "配置 Git 用户："
+
+          git -C "$GITHUB_WORKSPACE" config user.name "github-actions[bot]"
+
+          git -C "$GITHUB_WORKSPACE" config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          # ============================================================
+          # 查看当前分支
+          # ============================================================
+          echo "当前 Git 分支："
+
+          git -C "$GITHUB_WORKSPACE" branch --show-current
+
+          # ============================================================
+          # 同步远程仓库
+          #
+          # 这里不再指定具体分支，避免 self-hosted Runner
+          # 在 detached HEAD / 分支状态下出现额外问题。
+          # ============================================================
+          echo "同步远程仓库："
+
+          git -C "$GITHUB_WORKSPACE" fetch origin
+
+          # ============================================================
+          # 查看 Git 状态
           # ============================================================
           echo "当前 Git 状态："
-          git status --short --branch
+
+          git -C "$GITHUB_WORKSPACE" status --short --branch
 
           # ============================================================
           # 强制添加 processed_news.json
-          # 防止 .gitignore 意外忽略它
+          # 防止 .gitignore 意外忽略
           # ============================================================
-          git add -f processed_news.json
+          echo "添加 processed_news.json："
+
+          git -C "$GITHUB_WORKSPACE" add -f processed_news.json
 
           # ============================================================
           # 判断是否真的有变化
           # ============================================================
-          if git diff --cached --quiet -- processed_news.json; then
+          if git -C "$GITHUB_WORKSPACE" diff --cached --quiet -- processed_news.json; then
             echo "processed_news.json 没有新的变化。"
             exit 0
           fi
 
-          echo "准备提交已处理文章记录："
-          cat processed_news.json
-
           # ============================================================
           # 提交
           # ============================================================
-          git commit -m "chore: update processed news history"
+          echo "准备提交已处理文章记录："
+
+          cat "$GITHUB_WORKSPACE/processed_news.json"
+
+          git -C "$GITHUB_WORKSPACE" commit \
+            -m "chore: update processed news history"
 
           # ============================================================
-          # 推送当前分支
-          # 使用 HEAD 避免 detached HEAD 导致 push 失败
+          # 推送
+          #
+          # GITHUB_REF_NAME 在 workflow_dispatch 和 schedule 下
+          # 都可以获得当前分支名称。
           # ============================================================
-          git push origin "HEAD:${GITHUB_REF_NAME}"
+          echo "准备推送当前分支：${GITHUB_REF_NAME}"
+
+          git -C "$GITHUB_WORKSPACE" push \
+            origin "HEAD:${GITHUB_REF_NAME}"
 
           echo "processed_news.json 已成功提交并推送。"
