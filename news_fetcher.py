@@ -762,9 +762,10 @@ def load_processed_news():
         return processed_links
 
     except Exception as e:
-        print("读取已处理文章记录失败：", str(e))
-        print("将按空记录继续运行。")
-        return set()
+        raise RuntimeError(
+            "读取 processed_news.json 失败。为避免重复生成文章，"
+            f"本次运行已停止：{e}"
+        )
 
 
 def filter_unprocessed_news(news_list, processed_links):
