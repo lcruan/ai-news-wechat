@@ -515,8 +515,6 @@ def highlight_code(
 
     # --------------------------------------------------------
     # 颜色方案
-    #
-    # 整体保持现代深色编辑器风格。
     # --------------------------------------------------------
 
     COLOR_COMMENT = "#7f848e"
@@ -531,9 +529,7 @@ def highlight_code(
     COLOR_DEFAULT = "#abb2bf"
 
     # --------------------------------------------------------
-    # 先进行 HTML 转义。
-    #
-    # 后续生成的 span 标签是我们自己添加的。
+    # 先进行 HTML 转义
     # --------------------------------------------------------
 
     escaped = html.escape(
@@ -547,8 +543,6 @@ def highlight_code(
     # 1. 注释
     # 2. 字符串
     # 3. HTML 标签
-    #
-    # 避免后续关键词高亮把这些内容再次处理。
     # --------------------------------------------------------
 
     protected = []
@@ -574,12 +568,6 @@ def highlight_code(
 
     # --------------------------------------------------------
     # HTML / Vue 标签
-    #
-    # <template>
-    # <div class="app">
-    # </div>
-    #
-    # Vue 文件优先按 HTML 标签处理。
     # --------------------------------------------------------
 
     if language_lower in (
@@ -623,12 +611,6 @@ def highlight_code(
 
     # --------------------------------------------------------
     # 注释
-    #
-    # JavaScript / TypeScript / Java / C / C++ / Go / Rust
-    # Python / Bash / CSS / SQL 等常见注释。
-    #
-    # 注意：
-    # 对 HTML/Vue，标签保护后再处理注释。
     # --------------------------------------------------------
 
     comment_patterns = []
@@ -682,13 +664,6 @@ def highlight_code(
 
     # --------------------------------------------------------
     # 字符串
-    #
-    # 支持：
-    # "xxx"
-    # 'xxx'
-    # `xxx`
-    #
-    # 对 HTML 已经保护的标签不会再进入这里。
     # --------------------------------------------------------
 
     string_pattern = re.compile(
@@ -714,11 +689,6 @@ def highlight_code(
 
     # --------------------------------------------------------
     # 数字
-    #
-    # 例如：
-    # 100
-    # 3.14
-    # 0xff
     # --------------------------------------------------------
 
     escaped = re.sub(
@@ -747,8 +717,6 @@ def highlight_code(
 
     # --------------------------------------------------------
     # 关键字
-    #
-    # 根据语言选择不同关键字。
     # --------------------------------------------------------
 
     keyword_sets = {
@@ -808,8 +776,8 @@ def highlight_code(
             "while", "new", "class",
             "extends", "import",
             "from", "export",
-            "default", "async",
-            "await", "this",
+            "default", "async", "await",
+            "this",
             "interface", "type",
             "implements", "public",
             "private", "readonly"
@@ -964,32 +932,21 @@ def highlight_code(
         }
     }
 
-    # Vue / HTML 本身不需要普通语言关键字高亮
-    # 但 Vue 中的 script 代码可能仍然会有 JS。
     keyword_set = keyword_sets.get(
         language_lower,
         set()
     )
 
-    # JavaScript 别名
-    if language_lower in (
-        "js",
-    ):
+    if language_lower == "js":
         keyword_set = keyword_sets["javascript"]
 
-    if language_lower in (
-        "ts",
-    ):
+    if language_lower == "ts":
         keyword_set = keyword_sets["typescript"]
 
-    if language_lower in (
-        "py",
-    ):
+    if language_lower == "py":
         keyword_set = keyword_sets["python"]
 
-    if language_lower in (
-        "sh",
-    ):
+    if language_lower == "sh":
         keyword_set = keyword_sets["shell"]
 
     # --------------------------------------------------------
@@ -998,21 +955,20 @@ def highlight_code(
 
     if keyword_set:
 
-        # SQL 大小写不敏感
-        if language_lower == "sql":
-
-            keyword_pattern = (
-                r"\b(?:"
-                + "|".join(
-                    re.escape(word)
-                    for word in sorted(
-                        keyword_set,
-                        key=len,
-                        reverse=True
-                    )
+        keyword_pattern = (
+            r"\b(?:"
+            + "|".join(
+                re.escape(word)
+                for word in sorted(
+                    keyword_set,
+                    key=len,
+                    reverse=True
                 )
-                + r")\b"
             )
+            + r")\b"
+        )
+
+        if language_lower == "sql":
 
             escaped = re.sub(
                 keyword_pattern,
@@ -1027,19 +983,6 @@ def highlight_code(
 
         else:
 
-            keyword_pattern = (
-                r"\b(?:"
-                + "|".join(
-                    re.escape(word)
-                    for word in sorted(
-                        keyword_set,
-                        key=len,
-                        reverse=True
-                    )
-                )
-                + r")\b"
-            )
-
             escaped = re.sub(
                 keyword_pattern,
                 lambda m: (
@@ -1052,12 +995,6 @@ def highlight_code(
 
     # --------------------------------------------------------
     # 函数调用
-    #
-    # console.log(...)
-    # createApp(...)
-    # fetch(...)
-    #
-    # 只给函数名着色，不改变代码结构。
     # --------------------------------------------------------
 
     escaped = re.sub(
@@ -1073,12 +1010,6 @@ def highlight_code(
 
     # --------------------------------------------------------
     # CSS 属性
-    #
-    # color: red;
-    # display: flex;
-    #
-    # HTML 中也可能出现 style 内容，
-    # 这里仅针对 CSS 语言。
     # --------------------------------------------------------
 
     if language_lower in (
@@ -1101,8 +1032,6 @@ def highlight_code(
 
     # --------------------------------------------------------
     # 操作符
-    #
-    # => === !== == != && || ++ --
     # --------------------------------------------------------
 
     escaped = re.sub(
@@ -1117,8 +1046,6 @@ def highlight_code(
 
     # --------------------------------------------------------
     # 恢复被保护的内容
-    #
-    # 必须倒序恢复，避免一个 token 中包含另一个 token。
     # --------------------------------------------------------
 
     for placeholder, replacement in reversed(
@@ -1136,22 +1063,31 @@ def highlight_code(
 # ============================================================
 # 代码块
 #
-# 固定使用类似现代代码编辑器的深色样式：
+# 重点：
+# 手机端不要强制拆分代码字符。
 #
-# ┌─────────────────────────────┐
-# │ ● ● ●       JavaScript      │
-# ├─────────────────────────────┤
-# │ const app = createApp(App)  │
-# │ app.mount('#app')           │
-# └─────────────────────────────┘
+# 原来的：
 #
-# 样式由 Python 固定控制。
-# AI 只提供：
-# language / caption / code
+# white-space:pre-wrap
+# word-break:break-all
+# overflow-wrap:break-word
+# overflow-x:hidden
 #
-# 新增：
-# 静态语法高亮。
-# 不依赖微信端 JS。
+# 会导致：
+#
+# const myVariable = ...
+#
+# 在手机端被拆成非常难看的碎片。
+#
+# 现在改成：
+#
+# white-space:pre
+# word-break:normal
+# overflow-wrap:normal
+# overflow-x:auto
+#
+# 超出屏幕的代码保持完整，
+# 用户可以左右滑动查看。
 # ============================================================
 
 def render_code_block(code_block):
@@ -1194,9 +1130,8 @@ def render_code_block(code_block):
     # --------------------------------------------------------
     # 代码静态语法高亮
     #
-    # 注意：
-    # highlight_code() 内部会负责 HTML 转义。
-    # 不要在这里再次 escape。
+    # highlight_code() 内部负责 HTML 转义。
+    # 这里不能再次 escape。
     # --------------------------------------------------------
 
     highlighted_code = highlight_code(
@@ -1301,20 +1236,25 @@ def render_code_block(code_block):
     </section>
 
 
-    <!-- 代码主体 -->
+    <!--
+        代码主体：
+        允许横向滚动，不强制拆分代码字符。
+    -->
     <section style="
         margin:0;
         padding:0;
         width:100%;
         box-sizing:border-box;
-        overflow-x:hidden;
+        overflow-x:auto;
         overflow-y:hidden;
+        -webkit-overflow-scrolling:touch;
     ">
 
         <pre style="
             margin:0;
             padding:15px 16px;
-            width:100%;
+            width:max-content;
+            min-width:100%;
             box-sizing:border-box;
             background-color:#282c34;
             color:#abb2bf;
@@ -1327,10 +1267,9 @@ def render_code_block(code_block):
             font-size:13px;
             line-height:1.7em;
             letter-spacing:0;
-            white-space:pre-wrap !important;
-            word-break:break-all !important;
-            overflow-wrap:break-word !important;
-            max-width:100%;
+            white-space:pre !important;
+            word-break:normal !important;
+            overflow-wrap:normal !important;
             tab-size:2;
         "><code style="
             margin:0;
@@ -1345,11 +1284,12 @@ def render_code_block(code_block):
                 monospace;
             font-size:13px;
             line-height:1.7em;
-            white-space:pre-wrap !important;
-            word-break:break-all !important;
-            overflow-wrap:break-word !important;
-            max-width:100%;
+            white-space:pre !important;
+            word-break:normal !important;
+            overflow-wrap:normal !important;
             display:block;
+            width:max-content;
+            min-width:100%;
         ">{highlighted_code}</code></pre>
 
     </section>
@@ -1377,12 +1317,10 @@ def render_lead(lead):
     if not lead:
         return ""
 
-    # 清理 Markdown
     lead = clean_inline_markdown(
         lead
     )
 
-    # HTML 转义
     lead = escape_text(
         lead
     )
@@ -1739,7 +1677,6 @@ def render_section(
 
     for paragraph in paragraphs:
 
-        # 清理 AI 错误输出的章节编号
         paragraph = clean_section_paragraph(
             paragraph,
             number
@@ -1814,18 +1751,6 @@ def render_section(
 
     # --------------------------------------------------------
     # 代码块
-    #
-    # article.json：
-    #
-    # "code_blocks": [
-    #     {
-    #         "language": "javascript",
-    #         "caption": "示例代码",
-    #         "code": "const app = ..."
-    #     }
-    # ]
-    #
-    # 样式统一由 Python 控制。
     # --------------------------------------------------------
 
     code_blocks = section.get(
@@ -1864,29 +1789,6 @@ def render_section(
 
 # ============================================================
 # 处理 ending
-#
-# 兼容：
-#
-# 1. ending 是字符串
-# 2. ending 是正常段落数组
-# 3. ending 被 AI 错误拆成单字数组
-#
-# 第 3 种情况：
-#
-# ["这", "篇", "文", "章"]
-#
-# 自动恢复成：
-#
-# ["这篇文章"]
-#
-# 防止微信公众号出现：
-#
-# 这
-# 篇
-# 文
-# 章
-#
-# 一字一行。
 # ============================================================
 
 def normalize_ending(ending):
@@ -1906,8 +1808,6 @@ def normalize_ending(ending):
         if not ending:
             return []
 
-        # 如果字符串内部本身有换行，
-        # 按段落拆分。
         paragraphs = re.split(
             r"\n+",
             ending
@@ -1953,15 +1853,7 @@ def normalize_ending(ending):
 
     # --------------------------------------------------------
     # 情况 3：
-    #
-    # AI 错误地把一句话拆成了单字数组：
-    #
-    # ["这", "篇", "文", "章", "很", "重", "要"]
-    #
-    # 如果数组中的每一项都是单个字符，
-    # 说明它不是正常的段落数组。
-    #
-    # 这里把它重新拼接。
+    # AI 错误地把一句话拆成单字数组
     # --------------------------------------------------------
 
     if (
@@ -1975,10 +1867,6 @@ def normalize_ending(ending):
         return [
             "".join(ending)
         ]
-
-    # --------------------------------------------------------
-    # 正常段落数组
-    # --------------------------------------------------------
 
     return ending
 
@@ -2063,12 +1951,6 @@ def build_wechat_html(article):
             "写在最后"
         )
     )
-
-    # --------------------------------------------------------
-    # 规范化 ending
-    #
-    # 防止 ending 被错误拆成单字数组。
-    # --------------------------------------------------------
 
     ending_paragraphs = normalize_ending(
         ending
@@ -2290,9 +2172,6 @@ def upload_cover_image(
 
 # ============================================================
 # 记录已经成功进入微信公众号草稿箱的文章
-#
-# 只有 draft/add 成功后才记录。
-# news_fetcher.py 下次运行会读取这个文件并跳过这些链接。
 # ============================================================
 
 def record_processed_news(article):
@@ -2306,12 +2185,17 @@ def record_processed_news(article):
     ).strip()
 
     if not link:
-        print("警告：文章没有 original_link，无法记录已处理状态。")
+        print(
+            "警告：文章没有 original_link，"
+            "无法记录已处理状态。"
+        )
         return
 
     links = []
 
-    if os.path.exists(PROCESSED_NEWS_FILE):
+    if os.path.exists(
+        PROCESSED_NEWS_FILE
+    ):
         try:
             with open(
                 PROCESSED_NEWS_FILE,
@@ -2322,6 +2206,7 @@ def record_processed_news(article):
 
             if isinstance(data, dict):
                 links = data.get("links", [])
+
             elif isinstance(data, list):
                 links = data
 
@@ -2340,7 +2225,7 @@ def record_processed_news(article):
     if link not in links:
         links.append(link)
 
-    # 只保留最近 200 篇，避免文件无限增长。
+    # 只保留最近 200 篇
     links = links[-MAX_PROCESSED_NEWS:]
 
     with open(
@@ -2359,6 +2244,7 @@ def record_processed_news(article):
     print(
         f"已记录处理文章：{link}"
     )
+
     print(
         f"累计已处理文章：{len(links)} 篇"
     )
@@ -2489,7 +2375,8 @@ def add_draft(
 
     print("=" * 50)
 
-    # 只有 draft/add 真正成功后，才把原文链接写入已处理记录。
+    # 只有 draft/add 真正成功后，
+    # 才把原文链接写入已处理记录。
     record_processed_news(article)
 
     return media_id
