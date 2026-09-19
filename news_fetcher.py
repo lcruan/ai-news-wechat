@@ -1634,7 +1634,7 @@ web前端开发之旅
                 "content": prompt,
             }
         ],
-        max_tokens=6000,
+        max_tokens=4000,
     )
 
     result = extract_json_from_ai(
