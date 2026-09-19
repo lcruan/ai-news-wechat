@@ -166,9 +166,6 @@ def escape_text(text):
 
 # ============================================================
 # 清洗章节标题
-#
-# 防止 AI 自己把 01 / 02 / 03 / 04 写进标题。
-# 编号统一由 Python 排版组件负责。
 # ============================================================
 
 def clean_section_heading(
@@ -191,15 +188,6 @@ def clean_section_heading(
     ).strip()
 
     # 去掉开头的章节编号
-    #
-    # 支持：
-    # 01 标题
-    # 01：标题
-    # 01 - 标题
-    # 01 — 标题
-    # 01. 标题
-    # 01、标题
-    #
     heading = re.sub(
         r"^\s*[（(]?\s*(?:0?[1-9]|1[0-9]|20)"
         r"\s*[)）]?\s*"
@@ -229,11 +217,7 @@ def clean_section_heading(
             heading
         ).strip()
 
-    # 章节标题不需要额外的括号式副标题。
-    # 例如：
-    # “带类型泛型的 as 组件（强类型安全）”
-    # 统一保留为：
-    # “带类型泛型的 as 组件”
+    # 去掉标题末尾括号式副标题
     heading = re.sub(
         r"\s*[（(][^（）()]{1,40}[）)]\s*$",
         "",
@@ -245,12 +229,6 @@ def clean_section_heading(
 
 # ============================================================
 # 清洗正文开头错误出现的章节编号
-#
-# 例如：
-# 01 近日，社交平台……
-#
-# 自动变成：
-# 近日，社交平台……
 # ============================================================
 
 def clean_section_paragraph(
@@ -267,7 +245,6 @@ def clean_section_paragraph(
 
     number_text = f"{number:02d}"
 
-    # 只处理正文最开始的编号
     text = re.sub(
         rf"^{re.escape(number_text)}"
         r"\s*(?:[：:、.\-—–])?\s*",
@@ -293,8 +270,7 @@ def clean_inline_markdown(text):
 
     text = str(text or "")
 
-    # Markdown 链接：
-    # [文字](https://xxx)
+    # Markdown 链接
     text = re.sub(
         r"\[([^\]]+)\]\([^)]+\)",
         r"\1",
@@ -333,7 +309,7 @@ def clean_inline_markdown(text):
 
 
 # ============================================================
-# 处理普通段落中的加粗
+# 普通段落
 # ============================================================
 
 def render_paragraph(text):
@@ -343,7 +319,6 @@ def render_paragraph(text):
     if not text:
         return ""
 
-    # 先保护 Markdown 加粗
     placeholders = []
 
     def replace_bold(match):
@@ -356,9 +331,7 @@ def render_paragraph(text):
             )
         )
 
-        return (
-            f"___BOLD_{index}___"
-        )
+        return f"___BOLD_{index}___"
 
     text = re.sub(
         r"\*\*(.*?)\*\*",
@@ -366,12 +339,10 @@ def render_paragraph(text):
         text
     )
 
-    # 普通文本 HTML 转义
     text = escape_text(
         text
     )
 
-    # 恢复加粗
     for index, value in enumerate(
         placeholders
     ):
@@ -381,14 +352,12 @@ def render_paragraph(text):
             f"<strong>{value}</strong>"
         )
 
-    # 清理 Markdown 链接
     text = re.sub(
         r"\[([^\]]+)\]\([^)]+\)",
         r"\1",
         text
     )
 
-    # 清理单星号
     text = re.sub(
         r"(?<!\*)\*([^*]+)\*(?!\*)",
         r"\1",
@@ -414,8 +383,6 @@ def render_paragraph(text):
 
 # ============================================================
 # 代码语言名称
-#
-# 将 AI 返回的语言名称统一成公众号中显示的名称。
 # ============================================================
 
 def clean_code_language(language):
@@ -485,16 +452,44 @@ def clean_code_language(language):
 
 
 # ============================================================
-# 静态代码语法高亮
+# 代码安全渲染
 #
-# 注意：
-# 这里不依赖 JavaScript / highlight.js / Prism.js。
+# 重要：
 #
-# Python 在生成微信公众号 HTML 时，
-# 直接把代码转换成带颜色的 span。
+# 这里不再做复杂的正则语法高亮。
 #
-# 因此微信公众号打开文章时，
-# 不需要额外加载任何 JS。
+# 原来的 highlight_code() 会：
+#
+# 1. HTML 转义
+# 2. 加 token
+# 3. 匹配数字
+# 4. 匹配关键词
+# 5. 匹配函数
+# 6. 匹配操作符
+# 7. 再恢复 token
+#
+# 多轮正则处理已经生成的 HTML，
+# 很容易破坏 span 标签。
+#
+# 公众号文章首先必须保证代码内容准确、
+# HTML 结构稳定。
+#
+# 所以现在：
+#
+# 原始代码
+#     ↓
+# HTML escape
+#     ↓
+# <pre><code>
+#
+# 完整保留。
+#
+# 不修改代码字符。
+# 不改变缩进。
+# 不改变换行。
+# 不改变括号。
+# 不改变 HTML 标签。
+# 不改变 JS / TS / CSS 语法。
 # ============================================================
 
 def highlight_code(
@@ -509,585 +504,57 @@ def highlight_code(
     if not code:
         return ""
 
-    language_lower = str(
-        language or ""
-    ).strip().lower()
-
     # --------------------------------------------------------
-    # 颜色方案
-    # --------------------------------------------------------
-
-    COLOR_COMMENT = "#7f848e"
-    COLOR_STRING = "#98c379"
-    COLOR_KEYWORD = "#c678dd"
-    COLOR_NUMBER = "#d19a66"
-    COLOR_FUNCTION = "#61afef"
-    COLOR_TAG = "#e06c75"
-    COLOR_ATTRIBUTE = "#d19a66"
-    COLOR_BOOLEAN = "#56b6c2"
-    COLOR_OPERATOR = "#56b6c2"
-    COLOR_DEFAULT = "#abb2bf"
-
-    # --------------------------------------------------------
-    # 先进行 HTML 转义
+    # 直接进行 HTML 转义。
+    #
+    # 例如：
+    #
+    # <div>
+    #
+    # 会变成：
+    #
+    # &lt;div&gt;
+    #
+    # 防止代码本身被浏览器当成真正 HTML。
     # --------------------------------------------------------
 
-    escaped = html.escape(
+    return html.escape(
         code,
         quote=False
     )
-
-    # --------------------------------------------------------
-    # 使用占位符保护：
-    #
-    # 1. 注释
-    # 2. 字符串
-    # 3. HTML 标签
-    # --------------------------------------------------------
-
-    protected = []
-
-    def protect(value, color):
-
-        index = len(protected)
-
-        placeholder = (
-            f"___CODE_TOKEN_{index}___"
-        )
-
-        protected.append(
-            (
-                placeholder,
-                f'<span style="color:{color};">'
-                f'{value}'
-                f'</span>'
-            )
-        )
-
-        return placeholder
-
-    # --------------------------------------------------------
-    # HTML / Vue 标签
-    # --------------------------------------------------------
-
-    if language_lower in (
-        "html",
-        "htm",
-        "xml",
-        "vue"
-    ):
-
-        tag_pattern = re.compile(
-            r"&lt;/?[A-Za-z][^&]*?&gt;"
-        )
-
-        def replace_tag(match):
-
-            tag = match.group(0)
-
-            # 标签名
-            tag = re.sub(
-                r"(&lt;/?)([A-Za-z][\w:-]*)",
-                rf'\1<span style="color:{COLOR_TAG};">\2</span>',
-                tag
-            )
-
-            # 属性名
-            tag = re.sub(
-                r"(\s)([A-Za-z_:][\w:.-]*)(=)",
-                rf'\1<span style="color:{COLOR_ATTRIBUTE};">\2</span>\3',
-                tag
-            )
-
-            return protect(
-                tag,
-                COLOR_DEFAULT
-            )
-
-        escaped = tag_pattern.sub(
-            replace_tag,
-            escaped
-        )
-
-    # --------------------------------------------------------
-    # 注释
-    # --------------------------------------------------------
-
-    comment_patterns = []
-
-    if language_lower in (
-        "python",
-        "py",
-        "bash",
-        "shell",
-        "sh"
-    ):
-        comment_patterns.append(
-            r"(?<!\\)#.*?$"
-        )
-
-    elif language_lower in (
-        "sql",
-    ):
-        comment_patterns.extend([
-            r"--.*?$",
-            r"/\*[\s\S]*?\*/"
-        ])
-
-    elif language_lower in (
-        "html",
-        "htm",
-        "xml",
-        "vue"
-    ):
-        comment_patterns.append(
-            r"&lt;!--[\s\S]*?--&gt;"
-        )
-
-    else:
-        comment_patterns.extend([
-            r"//.*?$",
-            r"/\*[\s\S]*?\*/"
-        ])
-
-    for pattern in comment_patterns:
-
-        escaped = re.sub(
-            pattern,
-            lambda m: protect(
-                m.group(0),
-                COLOR_COMMENT
-            ),
-            escaped,
-            flags=re.MULTILINE
-        )
-
-    # --------------------------------------------------------
-    # 字符串
-    # --------------------------------------------------------
-
-    string_pattern = re.compile(
-        r"""
-        (?:
-            "(?:\\.|[^"\\])*"
-            |
-            '(?:\\.|[^'\\])*'
-            |
-            `(?:\\.|[^`\\])*`
-        )
-        """,
-        re.VERBOSE
-    )
-
-    escaped = string_pattern.sub(
-        lambda m: protect(
-            m.group(0),
-            COLOR_STRING
-        ),
-        escaped
-    )
-
-    # --------------------------------------------------------
-    # 数字
-    # --------------------------------------------------------
-
-    escaped = re.sub(
-        r"\b(?:0x[0-9a-fA-F]+|\d+(?:\.\d+)?)\b",
-        lambda m: (
-            f'<span style="color:{COLOR_NUMBER};">'
-            f'{m.group(0)}'
-            f'</span>'
-        ),
-        escaped
-    )
-
-    # --------------------------------------------------------
-    # Boolean / null / undefined
-    # --------------------------------------------------------
-
-    escaped = re.sub(
-        r"\b(?:true|false|null|undefined|None|True|False)\b",
-        lambda m: (
-            f'<span style="color:{COLOR_BOOLEAN};">'
-            f'{m.group(0)}'
-            f'</span>'
-        ),
-        escaped
-    )
-
-    # --------------------------------------------------------
-    # 关键字
-    # --------------------------------------------------------
-
-    keyword_sets = {
-
-        "javascript": {
-            "const", "let", "var",
-            "function", "return",
-            "if", "else", "for", "while",
-            "do", "switch", "case", "break",
-            "continue", "new", "class",
-            "extends", "import", "from",
-            "export", "default",
-            "async", "await",
-            "try", "catch", "finally",
-            "throw", "typeof",
-            "instanceof", "in", "of",
-            "this", "super",
-            "yield", "delete"
-        },
-
-        "typescript": {
-            "const", "let", "var",
-            "function", "return",
-            "if", "else", "for", "while",
-            "do", "switch", "case", "break",
-            "continue", "new", "class",
-            "extends", "implements",
-            "interface", "type",
-            "public", "private",
-            "protected", "readonly",
-            "import", "from",
-            "export", "default",
-            "async", "await",
-            "try", "catch", "finally",
-            "throw", "typeof",
-            "instanceof", "in", "of",
-            "this", "super",
-            "as", "keyof",
-            "namespace", "declare"
-        },
-
-        "jsx": {
-            "const", "let", "var",
-            "function", "return",
-            "if", "else", "for",
-            "while", "new", "class",
-            "extends", "import",
-            "from", "export",
-            "default", "async",
-            "await", "this"
-        },
-
-        "tsx": {
-            "const", "let", "var",
-            "function", "return",
-            "if", "else", "for",
-            "while", "new", "class",
-            "extends", "import",
-            "from", "export",
-            "default", "async", "await",
-            "this",
-            "interface", "type",
-            "implements", "public",
-            "private", "readonly"
-        },
-
-        "python": {
-            "def", "return",
-            "if", "elif", "else",
-            "for", "while", "in",
-            "import", "from", "as",
-            "class", "try", "except",
-            "finally", "raise",
-            "with", "lambda",
-            "yield", "async",
-            "await", "pass",
-            "break", "continue",
-            "global", "nonlocal",
-            "is", "not", "and", "or"
-        },
-
-        "java": {
-            "public", "private",
-            "protected", "class",
-            "interface", "extends",
-            "implements", "static",
-            "final", "void",
-            "int", "long", "float",
-            "double", "boolean",
-            "char", "new",
-            "return", "if", "else",
-            "for", "while", "do",
-            "switch", "case",
-            "break", "continue",
-            "try", "catch",
-            "finally", "throw",
-            "throws", "import",
-            "package", "this",
-            "super"
-        },
-
-        "c": {
-            "int", "char", "float",
-            "double", "void",
-            "long", "short",
-            "unsigned", "signed",
-            "struct", "typedef",
-            "const", "static",
-            "extern", "return",
-            "if", "else", "for",
-            "while", "do",
-            "switch", "case",
-            "break", "continue",
-            "sizeof", "include"
-        },
-
-        "cpp": {
-            "int", "char", "float",
-            "double", "void",
-            "long", "short",
-            "unsigned", "signed",
-            "struct", "class",
-            "public", "private",
-            "protected", "template",
-            "typename", "const",
-            "static", "virtual",
-            "override", "namespace",
-            "using", "return",
-            "if", "else", "for",
-            "while", "do",
-            "switch", "case",
-            "break", "continue",
-            "new", "delete",
-            "nullptr", "auto"
-        },
-
-        "go": {
-            "package", "import",
-            "func", "return",
-            "var", "const",
-            "type", "struct",
-            "interface", "if", "else",
-            "for", "range",
-            "switch", "case",
-            "break", "continue",
-            "go", "defer",
-            "map", "chan",
-            "select"
-        },
-
-        "rust": {
-            "fn", "let", "mut",
-            "const", "struct",
-            "enum", "impl", "trait",
-            "pub", "use", "mod",
-            "match", "if", "else",
-            "for", "while", "loop",
-            "return", "self",
-            "Self", "async", "await",
-            "move", "ref", "where"
-        },
-
-        "php": {
-            "function", "return",
-            "class", "public",
-            "private", "protected",
-            "static", "extends",
-            "implements", "new",
-            "if", "else", "elseif",
-            "for", "foreach",
-            "while", "do",
-            "switch", "case",
-            "break", "continue",
-            "try", "catch",
-            "throw", "namespace",
-            "use"
-        },
-
-        "sql": {
-            "SELECT", "FROM",
-            "WHERE", "INSERT",
-            "INTO", "VALUES",
-            "UPDATE", "SET",
-            "DELETE", "CREATE",
-            "TABLE", "ALTER",
-            "DROP", "JOIN",
-            "LEFT", "RIGHT",
-            "INNER", "OUTER",
-            "ON", "AS",
-            "AND", "OR",
-            "NOT", "NULL",
-            "ORDER", "BY",
-            "GROUP", "HAVING",
-            "LIMIT", "OFFSET"
-        },
-
-        "bash": {
-            "if", "then", "else",
-            "elif", "fi", "for",
-            "in", "do", "done",
-            "case", "esac",
-            "function", "while",
-            "until", "select"
-        },
-
-        "shell": {
-            "if", "then", "else",
-            "elif", "fi", "for",
-            "in", "do", "done",
-            "case", "esac",
-            "function", "while",
-            "until", "select"
-        }
-    }
-
-    keyword_set = keyword_sets.get(
-        language_lower,
-        set()
-    )
-
-    if language_lower == "js":
-        keyword_set = keyword_sets["javascript"]
-
-    if language_lower == "ts":
-        keyword_set = keyword_sets["typescript"]
-
-    if language_lower == "py":
-        keyword_set = keyword_sets["python"]
-
-    if language_lower == "sh":
-        keyword_set = keyword_sets["shell"]
-
-    # --------------------------------------------------------
-    # 关键词高亮
-    # --------------------------------------------------------
-
-    if keyword_set:
-
-        keyword_pattern = (
-            r"\b(?:"
-            + "|".join(
-                re.escape(word)
-                for word in sorted(
-                    keyword_set,
-                    key=len,
-                    reverse=True
-                )
-            )
-            + r")\b"
-        )
-
-        if language_lower == "sql":
-
-            escaped = re.sub(
-                keyword_pattern,
-                lambda m: (
-                    f'<span style="color:{COLOR_KEYWORD};">'
-                    f'{m.group(0)}'
-                    f'</span>'
-                ),
-                escaped,
-                flags=re.IGNORECASE
-            )
-
-        else:
-
-            escaped = re.sub(
-                keyword_pattern,
-                lambda m: (
-                    f'<span style="color:{COLOR_KEYWORD};">'
-                    f'{m.group(0)}'
-                    f'</span>'
-                ),
-                escaped
-            )
-
-    # --------------------------------------------------------
-    # 函数调用
-    # --------------------------------------------------------
-
-    escaped = re.sub(
-        r"\b([A-Za-z_$][\w$]*)"
-        r"(?=\s*\()",
-        lambda m: (
-            f'<span style="color:{COLOR_FUNCTION};">'
-            f'{m.group(1)}'
-            f'</span>'
-        ),
-        escaped
-    )
-
-    # --------------------------------------------------------
-    # CSS 属性
-    # --------------------------------------------------------
-
-    if language_lower in (
-        "css",
-        "scss",
-        "sass",
-        "less"
-    ):
-
-        escaped = re.sub(
-            r"([A-Za-z-]+)(\s*:)",
-            lambda m: (
-                f'<span style="color:{COLOR_FUNCTION};">'
-                f'{m.group(1)}'
-                f'</span>'
-                f'{m.group(2)}'
-            ),
-            escaped
-        )
-
-    # --------------------------------------------------------
-    # 操作符
-    # --------------------------------------------------------
-
-    escaped = re.sub(
-        r"(===|!==|=>|==|!=|<=|>=|&&|\|\||\+\+|--)",
-        lambda m: (
-            f'<span style="color:{COLOR_OPERATOR};">'
-            f'{m.group(0)}'
-            f'</span>'
-        ),
-        escaped
-    )
-
-    # --------------------------------------------------------
-    # 恢复被保护的内容
-    # --------------------------------------------------------
-
-    for placeholder, replacement in reversed(
-        protected
-    ):
-
-        escaped = escaped.replace(
-            placeholder,
-            replacement
-        )
-
-    return escaped
 
 
 # ============================================================
 # 代码块
 #
 # 重点：
-# 手机端不要强制拆分代码字符。
 #
-# 原来的：
+# PC：
+# 正常显示完整代码。
 #
-# white-space:pre-wrap
+# 手机：
+# 超宽代码横向滚动。
+#
+# 不再强制：
+#
 # word-break:break-all
 # overflow-wrap:break-word
-# overflow-x:hidden
+# white-space:pre-wrap
 #
-# 会导致：
+# 因此：
 #
 # const myVariable = ...
 #
-# 在手机端被拆成非常难看的碎片。
+# 不会被拆成：
 #
-# 现在改成：
+# const myVari
+# able = ...
 #
-# white-space:pre
-# word-break:normal
-# overflow-wrap:normal
-# overflow-x:auto
+# HTML：
 #
-# 超出屏幕的代码保持完整，
-# 用户可以左右滑动查看。
+# <div class="container">
+#
+# 也不会被任意拆开。
 # ============================================================
 
 def render_code_block(code_block):
@@ -1128,13 +595,10 @@ def render_code_block(code_block):
     ).strip()
 
     # --------------------------------------------------------
-    # 代码静态语法高亮
-    #
-    # highlight_code() 内部负责 HTML 转义。
-    # 这里不能再次 escape。
+    # 安全代码渲染
     # --------------------------------------------------------
 
-    highlighted_code = highlight_code(
+    safe_code = highlight_code(
         code,
         language
     )
@@ -1188,10 +652,8 @@ def render_code_block(code_block):
         background-color:#21252b;
         box-sizing:border-box;
         border-bottom:1px solid #3a3f4b;
-        position:relative;
     ">
 
-        <!-- 左侧三个编辑器圆点 -->
         <span style="
             display:inline-block;
             width:8px;
@@ -1222,7 +684,6 @@ def render_code_block(code_block):
             vertical-align:middle;
         "></span>
 
-        <!-- 代码语言 -->
         <span style="
             font-size:11px;
             line-height:34px;
@@ -1237,8 +698,11 @@ def render_code_block(code_block):
 
 
     <!--
-        代码主体：
-        允许横向滚动，不强制拆分代码字符。
+        代码滚动区域
+
+        注意：
+        这里允许横向滚动。
+        不强制折行。
     -->
     <section style="
         margin:0;
@@ -1290,7 +754,7 @@ def render_code_block(code_block):
             display:block;
             width:max-content;
             min-width:100%;
-        ">{highlighted_code}</code></pre>
+        ">{safe_code}</code></pre>
 
     </section>
 
@@ -1300,12 +764,6 @@ def render_code_block(code_block):
 
 # ============================================================
 # 顶部导语框
-#
-# 固定模板：
-# 左上角黄色三角
-# 右下角蓝色三角
-# 蓝色边框
-# 浅蓝背景
 # ============================================================
 
 def render_lead(lead):
@@ -1336,7 +794,6 @@ def render_lead(lead):
     overflow:hidden;
 ">
 
-    <!-- 左上角黄色三角 -->
     <section style="
         position:absolute;
         top:-1px;
@@ -1363,7 +820,6 @@ def render_lead(lead):
         {lead}
     </p>
 
-    <!-- 右下角蓝色三角 -->
     <section style="
         position:absolute;
         right:-1px;
@@ -1382,12 +838,6 @@ def render_lead(lead):
 
 # ============================================================
 # 章节标题
-#
-# 固定模板：
-#
-# [蓝色折角编号标签] [浅蓝标题框] [黄色三角]
-#
-# 编号只在左侧标签中出现。
 # ============================================================
 
 def render_section_heading(
@@ -1416,7 +866,6 @@ def render_section_heading(
     box-sizing:border-box;
 ">
 
-    <!-- 左侧蓝色折角编号标签 -->
     <section style="
         width:60px;
         min-width:60px;
@@ -1427,7 +876,6 @@ def render_section_heading(
         overflow:hidden;
     ">
 
-        <!-- 蓝色折角主体 -->
         <section style="
             position:absolute;
             left:0;
@@ -1464,7 +912,6 @@ def render_section_heading(
     </section>
 
 
-    <!-- 中间标题区域 -->
     <section style="
         flex:1;
         min-width:0;
@@ -1486,7 +933,6 @@ def render_section_heading(
     </section>
 
 
-    <!-- 右侧黄色三角 -->
     <section style="
         width:25px;
         min-width:25px;
@@ -1652,10 +1098,6 @@ def render_section(
 
     html_parts = []
 
-    # --------------------------------------------------------
-    # 章节标题
-    # --------------------------------------------------------
-
     html_parts.append(
         render_section_heading(
             number,
@@ -1665,10 +1107,6 @@ def render_section(
             )
         )
     )
-
-    # --------------------------------------------------------
-    # 正文段落
-    # --------------------------------------------------------
 
     paragraphs = section.get(
         "paragraphs",
@@ -1691,10 +1129,6 @@ def render_section(
                 paragraph_html
             )
 
-    # --------------------------------------------------------
-    # 小标题
-    # --------------------------------------------------------
-
     subsections = section.get(
         "subsections",
         []
@@ -1715,10 +1149,6 @@ def render_section(
             )
         )
 
-    # --------------------------------------------------------
-    # 金句
-    # --------------------------------------------------------
-
     highlight = section.get(
         "highlight",
         ""
@@ -1732,10 +1162,6 @@ def render_section(
             )
         )
 
-    # --------------------------------------------------------
-    # 列表
-    # --------------------------------------------------------
-
     items = section.get(
         "list",
         []
@@ -1748,10 +1174,6 @@ def render_section(
                 items
             )
         )
-
-    # --------------------------------------------------------
-    # 代码块
-    # --------------------------------------------------------
 
     code_blocks = section.get(
         "code_blocks",
@@ -1793,11 +1215,6 @@ def render_section(
 
 def normalize_ending(ending):
 
-    # --------------------------------------------------------
-    # 情况 1：
-    # ending 直接是字符串
-    # --------------------------------------------------------
-
     if isinstance(
         ending,
         str
@@ -1819,11 +1236,6 @@ def normalize_ending(ending):
             if paragraph.strip()
         ]
 
-    # --------------------------------------------------------
-    # 情况 2：
-    # ending 不是数组
-    # --------------------------------------------------------
-
     if not isinstance(
         ending,
         list
@@ -1838,10 +1250,6 @@ def normalize_ending(ending):
 
         return [text] if text else []
 
-    # --------------------------------------------------------
-    # 去掉空内容
-    # --------------------------------------------------------
-
     ending = [
         str(item).strip()
         for item in ending
@@ -1850,11 +1258,6 @@ def normalize_ending(ending):
 
     if not ending:
         return []
-
-    # --------------------------------------------------------
-    # 情况 3：
-    # AI 错误地把一句话拆成单字数组
-    # --------------------------------------------------------
 
     if (
         len(ending) > 1
@@ -1915,19 +1318,11 @@ def build_wechat_html(article):
 
     html_parts = []
 
-    # --------------------------------------------------------
-    # 导语
-    # --------------------------------------------------------
-
     html_parts.append(
         render_lead(
             lead
         )
     )
-
-    # --------------------------------------------------------
-    # 01～04
-    # --------------------------------------------------------
 
     for index, section in enumerate(
         sections[:4],
@@ -1940,10 +1335,6 @@ def build_wechat_html(article):
                 section
             )
         )
-
-    # --------------------------------------------------------
-    # 05 写在最后
-    # --------------------------------------------------------
 
     html_parts.append(
         render_section_heading(
@@ -1966,10 +1357,6 @@ def build_wechat_html(article):
             html_parts.append(
                 paragraph_html
             )
-
-    # --------------------------------------------------------
-    # 来源
-    # --------------------------------------------------------
 
     html_parts.append(
         f"""
@@ -2011,10 +1398,6 @@ def build_wechat_html(article):
         for part in html_parts
         if part
     )
-
-    # --------------------------------------------------------
-    # 微信图文内容
-    # --------------------------------------------------------
 
     full_html = f"""
 <div style="
@@ -2197,20 +1580,32 @@ def record_processed_news(article):
         PROCESSED_NEWS_FILE
     ):
         try:
+
             with open(
                 PROCESSED_NEWS_FILE,
                 "r",
                 encoding="utf-8",
             ) as f:
+
                 data = json.load(f)
 
-            if isinstance(data, dict):
-                links = data.get("links", [])
+            if isinstance(
+                data,
+                dict
+            ):
+                links = data.get(
+                    "links",
+                    []
+                )
 
-            elif isinstance(data, list):
+            elif isinstance(
+                data,
+                list
+            ):
                 links = data
 
         except Exception as e:
+
             print(
                 "读取已处理文章记录失败，将重新建立记录：",
                 str(e)
@@ -2225,8 +1620,9 @@ def record_processed_news(article):
     if link not in links:
         links.append(link)
 
-    # 只保留最近 200 篇
-    links = links[-MAX_PROCESSED_NEWS:]
+    links = links[
+        -MAX_PROCESSED_NEWS:
+    ]
 
     with open(
         PROCESSED_NEWS_FILE,
@@ -2272,8 +1668,6 @@ def add_draft(
         )
     ).strip()
 
-    # 最后保险：
-    # 防止 AI 标题残留 Markdown **
     title = re.sub(
         r"\*\*(.*?)\*\*",
         r"\1",
@@ -2377,7 +1771,9 @@ def add_draft(
 
     # 只有 draft/add 真正成功后，
     # 才把原文链接写入已处理记录。
-    record_processed_news(article)
+    record_processed_news(
+        article
+    )
 
     return media_id
 
