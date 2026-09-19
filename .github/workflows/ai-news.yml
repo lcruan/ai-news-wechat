@@ -39,18 +39,62 @@ jobs:
 
       - name: Save processed news history
         run: |
+          # ============================================================
+          # 强制进入 GitHub Actions 当前仓库目录
+          # self-hosted Runner 上不要依赖默认工作目录
+          # ============================================================
+          cd "$GITHUB_WORKSPACE"
+
+          echo "当前工作目录："
+          pwd
+
+          echo "当前仓库目录内容："
+          ls -la
+
+          # ============================================================
+          # 检查 processed_news.json
+          # ============================================================
           if [ ! -f processed_news.json ]; then
             echo "没有找到 processed_news.json，跳过提交。"
             exit 0
           fi
 
+          # ============================================================
+          # 检查 Git 仓库是否正常
+          # ============================================================
+          if [ ! -d .git ]; then
+            echo "错误：$GITHUB_WORKSPACE 下没有找到 .git 目录。"
+            echo "GitHub Actions checkout 可能没有正确完成。"
+            exit 1
+          fi
+
+          echo "Git 仓库检查通过。"
+
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
-          # -f 可以避免仓库 .gitignore 意外忽略 processed_news.json，
-          # 从而导致去重记录没有真正进入 Git。
+          # ============================================================
+          # 先同步远程分支
+          # ============================================================
+          echo "同步远程分支：${GITHUB_REF_NAME}"
+
+          git fetch origin "${GITHUB_REF_NAME}"
+
+          # ============================================================
+          # 检查当前分支
+          # ============================================================
+          echo "当前 Git 状态："
+          git status --short --branch
+
+          # ============================================================
+          # 强制添加 processed_news.json
+          # 防止 .gitignore 意外忽略它
+          # ============================================================
           git add -f processed_news.json
 
+          # ============================================================
+          # 判断是否真的有变化
+          # ============================================================
           if git diff --cached --quiet -- processed_news.json; then
             echo "processed_news.json 没有新的变化。"
             exit 0
@@ -59,10 +103,15 @@ jobs:
           echo "准备提交已处理文章记录："
           cat processed_news.json
 
+          # ============================================================
+          # 提交
+          # ============================================================
           git commit -m "chore: update processed news history"
 
-          # 防止其他 workflow 同时更新 main 导致 push 被拒绝。
-          git fetch origin "${GITHUB_REF_NAME}"
-          git rebase "origin/${GITHUB_REF_NAME}"
-
+          # ============================================================
+          # 推送当前分支
+          # 使用 HEAD 避免 detached HEAD 导致 push 失败
+          # ============================================================
           git push origin "HEAD:${GITHUB_REF_NAME}"
+
+          echo "processed_news.json 已成功提交并推送。"
