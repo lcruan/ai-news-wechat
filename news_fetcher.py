@@ -526,12 +526,23 @@ def call_ai(messages, max_tokens=4000):
             "没有找到 SILICONFLOW_API_KEY 环境变量"
         )
 
+    # --------------------------------------------------------
+    # 使用 SiliconFlow 流式输出。
+    #
+    # 原来的非流式方式会一直执行 response.read()，只有模型
+    # 完整生成后才返回。如果长文章生成时间较长，就可能在
+    # 120 秒后触发：The read operation timed out。
+    #
+    # stream=true 后，程序会持续读取 SSE 数据块并逐步拼接
+    # content，从而避免长文本一直卡在一次 response.read()。
+    # --------------------------------------------------------
     payload = {
         "model": MODEL,
         "messages": messages,
         "temperature": 0.2,
         "max_tokens": max_tokens,
         "enable_thinking": False,
+        "stream": True,
     }
 
     body = json.dumps(
@@ -556,52 +567,107 @@ def call_ai(messages, max_tokens=4000):
             data=body,
             headers={
                 "Content-Type": "application/json",
+                "Accept": "text/event-stream",
                 "Authorization": (
                     "Bearer "
                     + SILICONFLOW_API_KEY
                 ),
+                "User-Agent": "AI-News-Automation/1.0",
             },
             method="POST",
         )
 
         try:
 
+            content_parts = []
+            trace_id = ""
+
             with urllib.request.urlopen(
                 request,
                 timeout=REQUEST_TIMEOUT,
             ) as response:
 
-                response_data = response.read()
-
-            result = json.loads(
-                response_data.decode(
-                    "utf-8"
-                )
-            )
-
-            choices = result.get(
-                "choices"
-            )
-
-            if not choices:
-                raise RuntimeError(
-                    "SiliconFlow 返回结果中没有 choices"
+                # SiliconFlow 会在响应头中提供 trace id，出现异常时
+                # 打印出来方便后续排查服务端请求。
+                trace_id = (
+                    response.headers.get("X-Trace-Id")
+                    or response.headers.get("x-trace-id")
+                    or ""
                 )
 
-            message = choices[0].get(
-                "message",
-                {}
-            )
+                if trace_id:
+                    print(
+                        f"SiliconFlow Trace ID：{trace_id}"
+                    )
 
-            content = message.get(
-                "content",
-                ""
-            )
+                while True:
+
+                    line = response.readline()
+
+                    if not line:
+                        break
+
+                    line = line.decode(
+                        "utf-8",
+                        errors="replace",
+                    ).strip()
+
+                    if not line:
+                        continue
+
+                    # SSE 格式通常为：data: {...}
+                    if not line.startswith("data:"):
+                        continue
+
+                    data_text = line[5:].strip()
+
+                    if not data_text:
+                        continue
+
+                    if data_text == "[DONE]":
+                        break
+
+                    try:
+                        chunk = json.loads(data_text)
+                    except json.JSONDecodeError:
+                        # 单个 SSE 数据块异常时不要立即丢弃整个请求。
+                        # 后续块仍然可能包含完整内容。
+                        print(
+                            "SiliconFlow 返回了无法解析的流式数据块，"
+                            "已跳过。"
+                        )
+                        continue
+
+                    # OpenAI 兼容 SSE 格式：
+                    # choices[0].delta.content
+                    choices = chunk.get("choices", [])
+
+                    if not choices:
+                        continue
+
+                    delta = choices[0].get("delta", {}) or {}
+
+                    piece = delta.get("content", "")
+
+                    if piece:
+                        content_parts.append(piece)
+
+            content = "".join(content_parts)
 
             if not content:
                 raise RuntimeError(
-                    "SiliconFlow 返回内容为空"
+                    "SiliconFlow 流式返回内容为空"
+                    + (
+                        f"，Trace ID：{trace_id}"
+                        if trace_id
+                        else ""
+                    )
                 )
+
+            print(
+                "SiliconFlow 流式调用成功，"
+                f"收到 {len(content)} 个字符。"
+            )
 
             return content
 
@@ -667,7 +733,6 @@ def call_ai(messages, max_tokens=4000):
         f"SiliconFlow 连续 "
         f"{MAX_RETRIES} 次请求失败"
     )
-
 
 # ============================================================
 # 去除 AI 返回的 Markdown JSON 包裹
@@ -1634,7 +1699,7 @@ web前端开发之旅
                 "content": prompt,
             }
         ],
-        max_tokens=4000,
+        max_tokens=6000,
     )
 
     result = extract_json_from_ai(
