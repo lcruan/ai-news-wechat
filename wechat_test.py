@@ -5,6 +5,12 @@ import html
 import urllib.request
 import urllib.error
 import urllib.parse
+import tempfile
+
+from PIL import Image, ImageDraw, ImageFont
+from pygments import lex
+from pygments.lexers import get_lexer_by_name, TextLexer
+from pygments.token import Token
 
 
 # ============================================================
@@ -485,109 +491,400 @@ def clean_code_language(language):
 
 
 # ============================================================
-# 静态代码语法高亮
+# 代码图片生成与上传
+#
+# 微信移动端对 <pre><code> 的兼容性不稳定。
+# 因此这里不再把代码作为 HTML 代码块发送，
+# 而是由 Python 直接把“原文代码”渲染成 PNG 图片，
+# 再上传到微信公众号正文图片接口。
 #
 # 注意：
-# 这里不依赖 JavaScript / highlight.js / Prism.js。
-#
-# Python 在生成微信公众号 HTML 时，
-# 直接把代码转换成带颜色的 span。
-#
-# 因此微信公众号打开文章时，
-# 不需要额外加载任何 JS。
+# - code 内容不会被修改
+# - AI 不负责重新生成代码
+# - 没有原文代码时不会进入这里
 # ============================================================
 
-def highlight_code(
-    code,
-    language
-):
+CODE_FONT_PATH = "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc"
+CODE_FONT_SIZE = 24
+CODE_LINE_HEIGHT = 38
+CODE_IMAGE_WIDTH = 1200
+CODE_HORIZONTAL_PADDING = 28
+CODE_VERTICAL_PADDING = 22
+CODE_HEADER_HEIGHT = 58
+CODE_MAX_LINES_PER_IMAGE = 55
 
-    # 微信公众号对复杂的静态语法高亮兼容性并不稳定。
-    # 这里故意不再给代码内容插入任何 span / HTML 标签，
-    # 只做 HTML 转义，确保代码字符、缩进、换行 100% 原样保留。
-    # 代码块的深色编辑器样式仍由 render_code_block() 控制。
-    return html.escape(
-        str(code or ""),
-        quote=False
+
+def get_code_font(size=CODE_FONT_SIZE):
+
+    candidates = [
+        CODE_FONT_PATH,
+        "/usr/share/fonts/truetype/noto/NotoSansMono-Regular.ttf",
+        "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf",
+        "/usr/share/fonts/truetype/liberation/LiberationMono-Regular.ttf",
+    ]
+
+    for path in candidates:
+        if os.path.exists(path):
+            return ImageFont.truetype(path, size=size)
+
+    return ImageFont.load_default()
+
+
+def code_token_color(token_type):
+    """把 Pygments token 映射成固定的代码图片颜色。"""
+
+    if token_type in Token.Keyword:
+        return "#C586C0"
+    if token_type in Token.Name.Function:
+        return "#DCDCAA"
+    if token_type in Token.Name.Class:
+        return "#4EC9B0"
+    if token_type in Token.Name:
+        return "#9CDCFE"
+    if token_type in Token.String:
+        return "#CE9178"
+    if token_type in Token.Number:
+        return "#B5CEA8"
+    if token_type in Token.Comment:
+        return "#6A9955"
+    if token_type in Token.Operator:
+        return "#D4D4D4"
+    if token_type in Token.Punctuation:
+        return "#D4D4D4"
+    if token_type in Token.Generic:
+        return "#D4D4D4"
+
+    return "#D4D4D4"
+
+
+def get_code_lexer(language):
+
+    language = str(language or "text").strip().lower()
+
+    lexer_map = {
+        "javascript": "javascript",
+        "typescript": "typescript",
+        "jsx": "jsx",
+        "tsx": "tsx",
+        "vue": "html",
+        "html": "html",
+        "css": "css",
+        "scss": "scss",
+        "sass": "sass",
+        "less": "less",
+        "json": "json",
+        "xml": "xml",
+        "bash": "bash",
+        "shell": "bash",
+        "python": "python",
+        "java": "java",
+        "c": "c",
+        "c++": "cpp",
+        "sql": "sql",
+        "go": "go",
+        "rust": "rust",
+        "php": "php",
+        "markdown": "markdown",
+        "yaml": "yaml",
+        "text": "text",
+    }
+
+    lexer_name = lexer_map.get(language, "text")
+
+    try:
+        if lexer_name == "text":
+            return TextLexer()
+        return get_lexer_by_name(lexer_name)
+    except Exception:
+        return TextLexer()
+
+
+def split_code_lines(code, font, draw):
+    """仅为了图片宽度进行视觉换行，不修改 article.json 中的原始 code。"""
+
+    max_width = CODE_IMAGE_WIDTH - CODE_HORIZONTAL_PADDING * 2
+    result = []
+
+    for line in str(code or "").replace("\r\n", "\n").replace("\r", "\n").split("\n"):
+        if line == "":
+            result.append("")
+            continue
+
+        current = ""
+        for char in line:
+            test = current + char
+            bbox = draw.textbbox((0, 0), test, font=font)
+            width = bbox[2] - bbox[0]
+            if current and width > max_width:
+                result.append(current)
+                current = char
+            else:
+                current = test
+
+        result.append(current)
+
+    return result
+
+
+def draw_highlighted_code(image, code, language, start_line, end_line, font):
+    """把指定代码行绘制到图片上，代码文字本身保持原样。"""
+
+    draw = ImageDraw.Draw(image)
+    lexer = get_code_lexer(language)
+    source_lines = str(code or "").replace("\r\n", "\n").replace("\r", "\n").split("\n")
+    selected_lines = source_lines[start_line:end_line]
+
+    y = CODE_HEADER_HEIGHT + CODE_VERTICAL_PADDING
+    x0 = CODE_HORIZONTAL_PADDING
+    line_height = CODE_LINE_HEIGHT
+
+    # Pygments token 流按字符累计，再根据换行分配到当前视觉行。
+    tokens_by_line = [[]]
+    for token_type, value in lex("\n".join(selected_lines), lexer):
+        parts = value.split("\n")
+        for index, part in enumerate(parts):
+            if index > 0:
+                tokens_by_line.append([])
+            if part:
+                tokens_by_line[-1].append((token_type, part))
+
+    for line_index, tokens in enumerate(tokens_by_line):
+        if line_index >= len(selected_lines):
+            break
+
+        y_line = y + line_index * line_height
+        x = x0
+
+        if not tokens:
+            continue
+
+        for token_type, text_value in tokens:
+            color = code_token_color(token_type)
+            draw.text(
+                (x, y_line),
+                text_value,
+                font=font,
+                fill=color,
+            )
+            bbox = draw.textbbox((x, y_line), text_value, font=font)
+            x = bbox[2]
+
+    return image
+
+
+def create_code_images(code, language):
+    """生成一组代码 PNG，返回本地临时文件路径。"""
+
+    code = str(code or "")
+    font = get_code_font()
+
+    # 先按真实代码行切分；图片内部再根据宽度做视觉换行。
+    raw_lines = code.replace("\r\n", "\n").replace("\r", "\n").split("\n")
+    chunks = []
+
+    for index in range(0, len(raw_lines), CODE_MAX_LINES_PER_IMAGE):
+        chunks.append(raw_lines[index:index + CODE_MAX_LINES_PER_IMAGE])
+
+    if not chunks:
+        chunks = [[]]
+
+    paths = []
+
+    for chunk_index, chunk in enumerate(chunks, start=1):
+        # 使用临时画布计算视觉行数。
+        measure = Image.new("RGB", (CODE_IMAGE_WIDTH, 10), "#282C34")
+        measure_draw = ImageDraw.Draw(measure)
+        visual_lines = []
+
+        for line in chunk:
+            if line == "":
+                visual_lines.append("")
+                continue
+
+            current = ""
+            max_width = CODE_IMAGE_WIDTH - CODE_HORIZONTAL_PADDING * 2
+            for char in line:
+                test = current + char
+                bbox = measure_draw.textbbox((0, 0), test, font=font)
+                if current and (bbox[2] - bbox[0]) > max_width:
+                    visual_lines.append(current)
+                    current = char
+                else:
+                    current = test
+            visual_lines.append(current)
+
+        image_height = (
+            CODE_HEADER_HEIGHT
+            + CODE_VERTICAL_PADDING * 2
+            + max(1, len(visual_lines)) * CODE_LINE_HEIGHT
+        )
+
+        image = Image.new(
+            "RGB",
+            (CODE_IMAGE_WIDTH, image_height),
+            "#282C34",
+        )
+        draw = ImageDraw.Draw(image)
+
+        # 顶部编辑器栏
+        draw.rectangle(
+            (0, 0, CODE_IMAGE_WIDTH, CODE_HEADER_HEIGHT),
+            fill="#21252B",
+        )
+        draw.ellipse((22, 22, 36, 36), fill="#FF5F56")
+        draw.ellipse((44, 22, 58, 36), fill="#FFBD2E")
+        draw.ellipse((66, 22, 80, 36), fill="#27C93F")
+
+        header_font = get_code_font(20)
+        display_language = clean_code_language(language)
+        draw.text(
+            (CODE_IMAGE_WIDTH - 220, 17),
+            display_language,
+            font=header_font,
+            fill="#ABB2BF",
+        )
+
+        # 直接按视觉行绘制 token。为保证宽度可控，超长行使用等宽视觉换行。
+        lexer = get_code_lexer(language)
+        y = CODE_HEADER_HEIGHT + CODE_VERTICAL_PADDING
+        max_width = CODE_IMAGE_WIDTH - CODE_HORIZONTAL_PADDING * 2
+
+        for original_line in chunk:
+            line_parts = []
+            current = ""
+            for char in original_line:
+                test = current + char
+                bbox = draw.textbbox((0, 0), test, font=font)
+                if current and (bbox[2] - bbox[0]) > max_width:
+                    line_parts.append(current)
+                    current = char
+                else:
+                    current = test
+            line_parts.append(current)
+
+            if original_line == "":
+                line_parts = [""]
+
+            for visual_line in line_parts:
+                x = CODE_HORIZONTAL_PADDING
+                for token_type, value in lex(visual_line, lexer):
+                    color = code_token_color(token_type)
+                    draw.text(
+                        (x, y),
+                        value,
+                        font=font,
+                        fill=color,
+                    )
+                    bbox = draw.textbbox((x, y), value, font=font)
+                    x = bbox[2]
+                y += CODE_LINE_HEIGHT
+
+        fd, path = tempfile.mkstemp(
+            prefix="wechat_code_",
+            suffix=f"_{chunk_index}.png",
+        )
+        os.close(fd)
+
+        image.save(
+            path,
+            format="PNG",
+            optimize=True,
+        )
+
+        paths.append(path)
+
+    return paths
+
+
+def upload_article_image(access_token, image_path):
+    """上传正文图片，返回微信可直接用于正文 <img src> 的 URL。"""
+
+    url = (
+        f"{WECHAT_API_BASE}"
+        f"/cgi-bin/media/uploadimg"
+        f"?access_token={access_token}"
     )
 
+    boundary = "----WebKitFormBoundaryAIWechatCodeImage2026"
 
-# ============================================================
-# 代码块
-#
-# 固定使用类似现代代码编辑器的深色样式：
-#
-# ┌─────────────────────────────┐
-# │ ● ● ●       JavaScript      │
-# ├─────────────────────────────┤
-# │ const app = createApp(App)  │
-# │ app.mount('#app')           │
-# └─────────────────────────────┘
-#
-# 样式由 Python 固定控制。
-# AI 只提供：
-# language / caption / code
-#
-# 新增：
-# 静态语法高亮。
-# 不依赖微信端 JS。
-# ============================================================
+    with open(image_path, "rb") as f:
+        file_data = f.read()
 
-def render_code_block(code_block):
+    filename = os.path.basename(image_path)
 
-    if not isinstance(
-        code_block,
-        dict
-    ):
+    body = (
+        f"--{boundary}\r\n"
+        f'Content-Disposition: form-data; name="media"; filename="{filename}"\r\n'
+        f"Content-Type: image/png\r\n"
+        f"\r\n"
+    ).encode("utf-8")
+
+    body += file_data
+    body += f"\r\n--{boundary}--\r\n".encode("utf-8")
+
+    result = http_json_request(
+        url,
+        method="POST",
+        data=body,
+        headers={
+            "Content-Type": f"multipart/form-data; boundary={boundary}",
+        },
+    )
+
+    image_url = result.get("url", "")
+
+    if not image_url:
+        raise RuntimeError(
+            "代码图片上传成功但微信没有返回正文图片 URL"
+        )
+
+    return image_url
+
+
+def render_code_block(code_block, access_token):
+
+    if not isinstance(code_block, dict):
         return ""
 
-    code = code_block.get(
-        "code",
-        ""
-    )
-
-    if code is None:
-        code = ""
-
-    code = str(code)
-
+    code = str(code_block.get("code", "") or "")
     if not code.strip():
         return ""
 
     language = clean_code_language(
-        code_block.get(
-            "language",
-            ""
-        )
+        code_block.get("language", "")
     )
 
     caption = str(
-        code_block.get(
-            "caption",
-            ""
-        ) or ""
+        code_block.get("caption", "") or ""
     ).strip()
 
-    # 代码内容只做 HTML 转义，不做任何静态 span 高亮。
-    # 这样可以避免微信公众号二次解析/缓存后破坏代码结构。
-    safe_code = highlight_code(
-        code,
-        language
-    )
+    image_paths = create_code_images(code, language)
+    image_urls = []
 
-    caption_html = ""
+    try:
+        for image_path in image_paths:
+            print(
+                f"上传代码图片：{os.path.basename(image_path)}"
+            )
+            image_url = upload_article_image(
+                access_token,
+                image_path,
+            )
+            image_urls.append(image_url)
+    finally:
+        for image_path in image_paths:
+            try:
+                os.remove(image_path)
+            except OSError:
+                pass
+
+    html_parts = []
 
     if caption:
-
-        caption = clean_inline_markdown(
-            caption
-        )
-
-        caption = escape_text(
-            caption
-        )
-
-        caption_html = f"""
+        caption = clean_inline_markdown(caption)
+        caption = escape_text(caption)
+        html_parts.append(
+            f"""
 <p style="
     margin:12px 0 6px 0;
     padding:0;
@@ -600,124 +897,28 @@ def render_code_block(code_block):
     {caption}
 </p>
 """.strip()
+        )
 
-    return f"""
-{caption_html}
-
-<section style="
-    margin:16px 0 20px 0;
+    for image_url in image_urls:
+        safe_url = escape_text(image_url)
+        html_parts.append(
+            f"""
+<p style="
+    margin:14px 0 20px 0;
     padding:0;
     width:100%;
     box-sizing:border-box;
-    border-radius:8px;
-    overflow:hidden;
-    background-color:#282c34;
-    border:1px solid #3a3f4b;
+    text-align:center;
 ">
-
-    <!-- 代码块顶部栏 -->
-    <section style="
-        margin:0;
-        padding:0 12px;
-        height:34px;
-        line-height:34px;
-        background-color:#21252b;
-        box-sizing:border-box;
-        border-bottom:1px solid #3a3f4b;
-        position:relative;
-    ">
-
-        <span style="
-            display:inline-block;
-            width:8px;
-            height:8px;
-            margin-right:5px;
-            border-radius:50%;
-            background-color:#ff5f56;
-            vertical-align:middle;
-        "></span>
-
-        <span style="
-            display:inline-block;
-            width:8px;
-            height:8px;
-            margin-right:5px;
-            border-radius:50%;
-            background-color:#ffbd2e;
-            vertical-align:middle;
-        "></span>
-
-        <span style="
-            display:inline-block;
-            width:8px;
-            height:8px;
-            margin-right:10px;
-            border-radius:50%;
-            background-color:#27c93f;
-            vertical-align:middle;
-        "></span>
-
-        <span style="
-            font-size:11px;
-            line-height:34px;
-            color:#abb2bf;
-            vertical-align:middle;
-            letter-spacing:0.5px;
-        ">
-            {escape_text(language)}
-        </span>
-
-    </section>
-
-    <!-- 真正负责横向滚动的代码容器 -->
-    <section style="
-        margin:0;
-        padding:0;
-        width:100%;
-        box-sizing:border-box;
-        overflow-x:auto;
-        overflow-y:hidden;
-        -webkit-overflow-scrolling:touch;
-        background-color:#282c34;
-    ">
-
-        <pre style="
-            margin:0;
-            padding:15px 16px;
-            width:max-content;
-            min-width:100%;
-            box-sizing:border-box;
-            background-color:#282c34;
-            color:#abb2bf;
-            font-family:Menlo,Monaco,Consolas,'Courier New',monospace;
-            font-size:13px;
-            line-height:1.7em;
-            letter-spacing:0;
-            white-space:pre;
-            word-break:normal;
-            overflow-wrap:normal;
-            tab-size:2;
-            -webkit-text-size-adjust:100%;
-        "><code style="
-            margin:0;
-            padding:0;
-            background-color:transparent;
-            color:#abb2bf;
-            font-family:Menlo,Monaco,Consolas,'Courier New',monospace;
-            font-size:13px;
-            line-height:1.7em;
-            letter-spacing:0;
-            white-space:pre;
-            word-break:normal;
-            overflow-wrap:normal;
-            tab-size:2;
-            display:block;
-        ">{safe_code}</code></pre>
-
-    </section>
-
-</section>
+    <img
+        src="{safe_url}"
+        style="display:block;width:100%;height:auto;margin:0 auto;"
+    />
+</p>
 """.strip()
+        )
+
+    return "\n".join(html_parts)
 
 
 # ============================================================
@@ -1071,7 +1272,8 @@ def render_list(items):
 
 def render_section(
     number,
-    section
+    section,
+    access_token
 ):
 
     html_parts = []
@@ -1211,7 +1413,8 @@ def render_section(
         for code_block in code_blocks:
 
             code_html = render_code_block(
-                code_block
+                code_block,
+                access_token
             )
 
             if code_html:
@@ -1349,7 +1552,7 @@ def normalize_ending(ending):
 # 微信公众号完整 HTML
 # ============================================================
 
-def build_wechat_html(article):
+def build_wechat_html(article, access_token):
 
     title = escape_text(
         article.get(
@@ -1411,7 +1614,8 @@ def build_wechat_html(article):
         html_parts.append(
             render_section(
                 index,
-                section
+                section,
+                access_token
             )
         )
 
@@ -1757,7 +1961,8 @@ def add_draft(
     )
 
     content = build_wechat_html(
-        article
+        article,
+        access_token
     )
 
     print(
