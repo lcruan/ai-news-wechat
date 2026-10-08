@@ -50,6 +50,7 @@ jobs:
                   "pip",
                   "install",
                   "--user",
+                  "--break-system-packages",
                   "--disable-pip-version-check",
                   *missing,
               ])
