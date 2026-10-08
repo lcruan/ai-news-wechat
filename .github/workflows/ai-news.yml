@@ -24,6 +24,39 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Prepare Python dependencies
+        run: |
+          python3 - <<'PY'
+          import importlib.util
+          import subprocess
+          import sys
+
+          packages = {
+              "PIL": "Pillow",
+              "pygments": "Pygments",
+          }
+
+          missing = [
+              package
+              for module, package in packages.items()
+              if importlib.util.find_spec(module) is None
+          ]
+
+          if missing:
+              print("需要安装的 Python 依赖：", ", ".join(missing))
+              subprocess.check_call([
+                  sys.executable,
+                  "-m",
+                  "pip",
+                  "install",
+                  "--user",
+                  "--disable-pip-version-check",
+                  *missing,
+              ])
+          else:
+              print("Pillow / Pygments 已安装，无需重复安装。")
+          PY
+
       - name: Run AI news filter
         env:
           SILICONFLOW_API_KEY: ${{ secrets.SILICONFLOW_API_KEY }}
