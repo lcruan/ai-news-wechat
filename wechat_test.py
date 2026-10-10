@@ -504,14 +504,17 @@ def clean_code_language(language):
 # - 没有原文代码时不会进入这里
 # ============================================================
 
+# 微信公众号会按正文宽度缩放图片，因此图片内必须使用较大的原始字号。
+# 1200px 图片在手机正文中通常会缩到约 320–400px；48px 字号缩放后约为 13–16px。
 CODE_FONT_PATH = "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc"
-CODE_FONT_SIZE = 24
-CODE_LINE_HEIGHT = 38
+CODE_FONT_SIZE = 48
+CODE_LINE_HEIGHT = 70
 CODE_IMAGE_WIDTH = 1200
-CODE_HORIZONTAL_PADDING = 28
-CODE_VERTICAL_PADDING = 22
-CODE_HEADER_HEIGHT = 58
-CODE_MAX_LINES_PER_IMAGE = 55
+CODE_HORIZONTAL_PADDING = 32
+CODE_VERTICAL_PADDING = 24
+CODE_HEADER_HEIGHT = 72
+# 控制单张图片高度；代码较长时自动拆成多张，避免手机上需要连续滚动超长图片。
+CODE_MAX_LINES_PER_IMAGE = 30
 
 
 def get_code_font(size=CODE_FONT_SIZE):
@@ -731,14 +734,14 @@ def create_code_images(code, language):
             (0, 0, CODE_IMAGE_WIDTH, CODE_HEADER_HEIGHT),
             fill="#21252B",
         )
-        draw.ellipse((22, 22, 36, 36), fill="#FF5F56")
-        draw.ellipse((44, 22, 58, 36), fill="#FFBD2E")
-        draw.ellipse((66, 22, 80, 36), fill="#27C93F")
+        draw.ellipse((24, 28, 42, 46), fill="#FF5F56")
+        draw.ellipse((52, 28, 70, 46), fill="#FFBD2E")
+        draw.ellipse((80, 28, 98, 46), fill="#27C93F")
 
-        header_font = get_code_font(20)
+        header_font = get_code_font(26)
         display_language = clean_code_language(language)
         draw.text(
-            (CODE_IMAGE_WIDTH - 220, 17),
+            (CODE_IMAGE_WIDTH - 250, 22),
             display_language,
             font=header_font,
             fill="#ABB2BF",
