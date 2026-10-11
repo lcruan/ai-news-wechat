@@ -504,17 +504,14 @@ def clean_code_language(language):
 # - 没有原文代码时不会进入这里
 # ============================================================
 
-# 微信公众号会按正文宽度缩放图片，因此图片内必须使用较大的原始字号。
-# 1200px 图片在手机正文中通常会缩到约 320–400px；48px 字号缩放后约为 13–16px。
 CODE_FONT_PATH = "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc"
-CODE_FONT_SIZE = 48
-CODE_LINE_HEIGHT = 70
+CODE_FONT_SIZE = 24
+CODE_LINE_HEIGHT = 38
 CODE_IMAGE_WIDTH = 1200
-CODE_HORIZONTAL_PADDING = 32
-CODE_VERTICAL_PADDING = 24
-CODE_HEADER_HEIGHT = 72
-# 控制单张图片高度；代码较长时自动拆成多张，避免手机上需要连续滚动超长图片。
-CODE_MAX_LINES_PER_IMAGE = 30
+CODE_HORIZONTAL_PADDING = 28
+CODE_VERTICAL_PADDING = 22
+CODE_HEADER_HEIGHT = 58
+CODE_MAX_LINES_PER_IMAGE = 55
 
 
 def get_code_font(size=CODE_FONT_SIZE):
@@ -734,14 +731,14 @@ def create_code_images(code, language):
             (0, 0, CODE_IMAGE_WIDTH, CODE_HEADER_HEIGHT),
             fill="#21252B",
         )
-        draw.ellipse((24, 28, 42, 46), fill="#FF5F56")
-        draw.ellipse((52, 28, 70, 46), fill="#FFBD2E")
-        draw.ellipse((80, 28, 98, 46), fill="#27C93F")
+        draw.ellipse((22, 22, 36, 36), fill="#FF5F56")
+        draw.ellipse((44, 22, 58, 36), fill="#FFBD2E")
+        draw.ellipse((66, 22, 80, 36), fill="#27C93F")
 
-        header_font = get_code_font(26)
+        header_font = get_code_font(20)
         display_language = clean_code_language(language)
         draw.text(
-            (CODE_IMAGE_WIDTH - 250, 22),
+            (CODE_IMAGE_WIDTH - 220, 17),
             display_language,
             font=header_font,
             fill="#ABB2BF",
@@ -845,6 +842,11 @@ def upload_article_image(access_token, image_path):
 
 
 def render_code_block(code_block, access_token):
+    """将代码渲染为可复制、可缩放的 HTML 文本，而不是模糊的代码图片。
+
+    不依赖微信公众号编辑器工具栏，也不上传代码图片；每一行作为 HTML
+    文本输出，尽量保留缩进并允许手机端自动换行。封面图片上传流程不受影响。
+    """
 
     if not isinstance(code_block, dict):
         return ""
@@ -853,74 +855,49 @@ def render_code_block(code_block, access_token):
     if not code.strip():
         return ""
 
-    language = clean_code_language(
-        code_block.get("language", "")
-    )
-
-    caption = str(
-        code_block.get("caption", "") or ""
-    ).strip()
-
-    image_paths = create_code_images(code, language)
-    image_urls = []
-
-    try:
-        for image_path in image_paths:
-            print(
-                f"上传代码图片：{os.path.basename(image_path)}"
-            )
-            image_url = upload_article_image(
-                access_token,
-                image_path,
-            )
-            image_urls.append(image_url)
-    finally:
-        for image_path in image_paths:
-            try:
-                os.remove(image_path)
-            except OSError:
-                pass
-
+    language = clean_code_language(code_block.get("language", ""))
+    caption = str(code_block.get("caption", "") or "").strip()
     html_parts = []
 
     if caption:
         caption = clean_inline_markdown(caption)
         caption = escape_text(caption)
         html_parts.append(
-            f"""
-<p style="
-    margin:12px 0 6px 0;
-    padding:0;
-    font-size:13px;
-    line-height:1.7em;
-    color:#666666;
-    width:100%;
-    box-sizing:border-box;
-">
-    {caption}
-</p>
-""".strip()
+            '<p style="margin:12px 0 6px 0;padding:0;font-size:13px;'
+            'line-height:1.7em;color:#666666;">'
+            f'{caption}</p>'
         )
 
-    for image_url in image_urls:
-        safe_url = escape_text(image_url)
+    if language:
         html_parts.append(
-            f"""
-<p style="
-    margin:14px 0 20px 0;
-    padding:0;
-    width:100%;
-    box-sizing:border-box;
-    text-align:center;
-">
-    <img
-        src="{safe_url}"
-        style="display:block;width:100%;height:auto;margin:0 auto;"
-    />
-</p>
-""".strip()
+            '<p style="margin:10px 0 0 0;padding:7px 10px;'
+            'background:#eaf1f8;color:#315b7d;font-size:12px;'
+            'line-height:1.5em;font-weight:bold;">'
+            f'{escape_text(language)} 代码</p>'
         )
 
+    # 微信正文对 <pre>/<code> 的样式支持不一致，因此使用普通 HTML 文本行。
+    # 用 &nbsp; 保留行首缩进；HTML 转义避免代码中的 <、>、& 被当作标签。
+    lines = code.replace("\r\n", "\n").replace("\r", "\n").split("\n")
+    html_parts.append(
+        '<section style="margin:0 0 18px 0;padding:10px 0;'
+        'background:#f5f7fa;border:1px solid #e2e8f0;">'
+    )
+
+    for line in lines:
+        escaped_line = escape_text(line)
+        escaped_line = escaped_line.replace(" ", "&nbsp;").replace("\t", "&nbsp;&nbsp;&nbsp;&nbsp;")
+        if not escaped_line:
+            escaped_line = "&nbsp;"
+        html_parts.append(
+            '<p style="margin:0;padding:2px 10px;color:#263445;'
+            'font-family:Consolas,Menlo,Monaco,monospace;'
+            'font-size:13px;line-height:1.75em;'
+            'word-break:break-all;overflow-wrap:anywhere;">'
+            f'{escaped_line}</p>'
+        )
+
+    html_parts.append('</section>')
     return "\n".join(html_parts)
 
 
