@@ -1632,43 +1632,10 @@ def build_wechat_html(article, access_token):
             )
 
     # --------------------------------------------------------
-    # 来源
+    # 不在正文底部追加“来源 / 原文”信息。
+    # 原文链接仍保留在 article.json / processed_news.json 中，
+    # 用于新闻去重和记录，不展示在公众号正文或“阅读原文”入口。
     # --------------------------------------------------------
-
-    html_parts.append(
-        f"""
-<section style="
-    margin-top:28px;
-    padding-top:12px;
-    border-top:1px solid #eeeeee;
-    width:100%;
-    box-sizing:border-box;
-">
-    <p style="
-        margin:6px 0;
-        font-size:12px;
-        line-height:1.7em;
-        color:#999999;
-        width:100%;
-        box-sizing:border-box;
-    ">
-        <strong>来源：</strong>{source}
-    </p>
-
-    <p style="
-        margin:6px 0;
-        font-size:12px;
-        line-height:1.7em;
-        color:#999999;
-        word-break:break-all;
-        width:100%;
-        box-sizing:border-box;
-    ">
-        <strong>原文：</strong>{original_link}
-    </p>
-</section>
-""".strip()
-    )
 
     body = "\n".join(
         part
@@ -1969,12 +1936,8 @@ def add_draft(
 
                 "content": content,
 
-                "content_source_url": (
-                    article.get(
-                        "original_link",
-                        ""
-                    )
-                ),
+                # 留空，避免公众号文章左下角出现“阅读原文”入口。
+                "content_source_url": "",
 
                 "thumb_media_id":
                     thumb_media_id,
