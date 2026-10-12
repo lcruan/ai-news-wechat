@@ -1069,23 +1069,25 @@ def render_section_heading(
     </section>
 
 
-    <!-- 中间标题区域 -->
+    <!-- 中间标题区域：允许手机端自动换行，避免标题被省略号截断 -->
     <section style="
         flex:1;
         min-width:0;
-        height:30px;
-        padding:0 12px;
+        min-height:30px;
+        height:auto;
+        padding:5px 10px;
         background-color:#ebf6ff;
         border-top:1px solid #5c8efe;
         border-bottom:1px solid #5c8efe;
         color:#5c8efe;
         font-size:16px;
-        line-height:28px;
+        line-height:1.5em;
         font-weight:bold;
         box-sizing:border-box;
-        overflow:hidden;
-        white-space:nowrap;
-        text-overflow:ellipsis;
+        white-space:normal;
+        word-break:break-word;
+        overflow-wrap:anywhere;
+        overflow:visible;
     ">
         {heading}
     </section>
