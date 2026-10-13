@@ -999,124 +999,30 @@ def render_section_heading(
     number,
     heading
 ):
+    """生成更适合微信手机端的章节标题：表格布局、自然换行、避免 flex 兼容差异。"""
 
-    heading = clean_section_heading(
-        heading,
-        number
-    )
-
-    heading = escape_text(
-        heading
-    )
-
+    heading = clean_section_heading(heading, number)
+    heading = escape_text(heading)
     number_text = f"{number:02d}"
 
     return f"""
-<section style="
-    margin:24px 0 16px 0;
-    padding:0;
-    display:flex;
-    align-items:stretch;
-    width:100%;
-    box-sizing:border-box;
-">
-
-    <!-- 左侧蓝色折角编号标签 -->
-    <section style="
-        width:60px;
-        min-width:60px;
-        height:30px;
-        position:relative;
-        box-sizing:border-box;
-        background-color:#ebf6ff;
-        overflow:hidden;
-    ">
-
-        <!-- 蓝色折角主体 -->
-        <section style="
-            position:absolute;
-            left:0;
-            top:0;
-            width:50px;
-            height:30px;
-            background-color:#5c8efe;
-            clip-path:polygon(
-                0 0,
-                100% 0,
-                78% 50%,
-                100% 100%,
-                0 100%
-            );
-            box-sizing:border-box;
-        "></section>
-
-        <span style="
-            position:absolute;
-            left:0;
-            top:0;
-            width:40px;
-            height:30px;
-            line-height:30px;
-            text-align:center;
-            font-size:14px;
-            font-weight:bold;
-            color:#ffffff;
-            z-index:2;
-        ">
-            {number_text}
-        </span>
-
-    </section>
-
-
-    <!-- 中间标题区域：允许手机端自动换行，避免标题被省略号截断 -->
-    <section style="
-        flex:1;
-        min-width:0;
-        min-height:30px;
-        height:auto;
-        padding:5px 10px;
-        background-color:#ebf6ff;
-        border-top:1px solid #5c8efe;
-        border-bottom:1px solid #5c8efe;
-        color:#5c8efe;
-        font-size:16px;
-        line-height:1.5em;
-        font-weight:bold;
-        box-sizing:border-box;
-        white-space:normal;
-        word-break:break-word;
-        overflow-wrap:anywhere;
-        overflow:visible;
-    ">
-        {heading}
-    </section>
-
-
-    <!-- 右侧黄色三角 -->
-    <section style="
-        width:25px;
-        min-width:25px;
-        height:30px;
-        position:relative;
-        box-sizing:border-box;
-        overflow:hidden;
-    ">
-        <section style="
-            position:absolute;
-            right:0;
-            top:0;
-            width:0;
-            height:0;
-            border-top:15px solid rgb(255,196,64);
-            border-bottom:15px solid transparent;
-            border-left:15px solid transparent;
-            line-height:0;
-            font-size:0;
-        "></section>
-    </section>
-
-</section>
+<table style="width:100%;border-collapse:collapse;table-layout:fixed;margin:24px 0 16px 0;">
+  <tbody>
+    <tr>
+      <td style="width:48px;padding:0;vertical-align:top;background:#5c8efe;text-align:center;color:#ffffff;font-size:14px;font-weight:bold;line-height:30px;">
+        {number_text}
+      </td>
+      <td style="padding:0;vertical-align:top;background:#ebf6ff;border-top:1px solid #5c8efe;border-bottom:1px solid #5c8efe;">
+        <p style="margin:0;padding:6px 10px;color:#5c8efe;font-size:16px;line-height:1.55;font-weight:bold;white-space:normal;word-break:break-all;overflow-wrap:break-word;">
+          {heading}
+        </p>
+      </td>
+      <td style="width:18px;padding:0;vertical-align:top;background:#ebf6ff;border-top:1px solid #5c8efe;border-bottom:1px solid #5c8efe;">
+        <section style="width:0;height:0;border-top:18px solid rgb(255,196,64);border-left:18px solid transparent;line-height:0;font-size:0;"></section>
+      </td>
+    </tr>
+  </tbody>
+</table>
 """.strip()
 
 
