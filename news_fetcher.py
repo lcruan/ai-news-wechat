@@ -809,69 +809,79 @@ def extract_json_from_ai(text):
 
 
 def parse_json_with_repair(raw_text, purpose="AI 返回内容"):
-    """先解析 AI 返回的 JSON；语法错误时请求模型修复一次。"""
+    """解析 AI 返回的 JSON；失败时进行最多两轮带错误定位的修复。"""
 
     cleaned = extract_json_from_ai(raw_text)
 
     try:
         return json.loads(cleaned)
     except json.JSONDecodeError as first_error:
-        start = max(0, first_error.pos - 160)
-        end = min(len(cleaned), first_error.pos + 160)
-        context = cleaned[start:end].replace("\n", "\\n")
+        current_text = cleaned
+        current_error = first_error
+
+    # 首次解析失败后最多再让模型修复两次；每轮都提供具体错误位置。
+    for repair_attempt in range(1, 3):
+        start = max(0, current_error.pos - 220)
+        end = min(len(current_text), current_error.pos + 220)
+        context = current_text[start:end].replace("\n", "\\n").replace("\r", "\\r")
 
         print("")
-        print(f"{purpose} JSON 解析失败，准备让 AI 修复一次。")
         print(
-            f"首次错误：第 {first_error.lineno} 行，"
-            f"第 {first_error.colno} 列；"
-            f"字符位置 {first_error.pos}。"
+            f"{purpose} JSON 解析失败，准备自动修复（第 {repair_attempt}/2 次）。"
+        )
+        print(
+            f"当前错误：第 {current_error.lineno} 行，第 {current_error.colno} 列；"
+            f"字符位置 {current_error.pos}。"
         )
         print(f"错误附近内容：{context}")
 
-        repair_prompt = f"""你是严格的 JSON 语法修复器。
-下面内容原本是一份 JSON，但存在语法错误。
-请只修复 JSON 语法，尽可能逐字保留所有字段、字段值、文章内容、段落顺序和代码内容；不要总结、改写、删减或补充文章事实。
+        repair_prompt = f'''你是一个只负责修复 JSON 语法的程序，不是文章编辑。
+下面提供的是一份原本应该是 JSON 对象的文本，但 Python JSON 解析器报告了语法错误。
 
-必须遵守：
-1. 只输出一个完整、合法的 JSON 对象。
-2. 不要使用 Markdown 代码围栏，不要添加解释。
-3. 字符串内部的双引号必须正确转义。
-4. 字符串中的换行、制表符等必须使用合法 JSON 转义。
-5. 保留原有字段结构和数组结构，不要遗漏字段。
+解析器错误信息：{current_error.msg}
+错误位置：第 {current_error.lineno} 行，第 {current_error.colno} 列，字符位置 {current_error.pos}
+错误附近文本（仅用于定位）：{context}
 
-待修复内容如下：
-{cleaned}
-"""
+请修复下面的完整文本，并严格遵守：
+1. 只输出一个完整、可被 Python json.loads 直接解析的 JSON 对象。
+2. 不要输出 Markdown 围栏、说明、前言或结尾。
+3. 保留所有字段、字段值、数组顺序、段落内容及代码内容；不要总结、改写、删减或添加事实。
+4. 特别检查字符串中未转义的双引号、字符串内的真实换行/制表符、缺失的逗号或多余逗号。
+5. 不要把整份 JSON 放进某个字符串字段；顶层必须仍然是 JSON 对象。
+6. 如果内容中出现代码或引号，也必须作为合法 JSON 字符串正确转义，不能为了修语法而删掉内容。
+
+待修复的完整文本开始：
+{current_text}
+待修复的完整文本结束。
+'''
 
         repaired_raw = call_ai(
             [{"role": "user", "content": repair_prompt}],
             max_tokens=6000,
         )
-        repaired = extract_json_from_ai(repaired_raw)
+        current_text = extract_json_from_ai(repaired_raw)
 
         try:
-            parsed = json.loads(repaired)
-        except json.JSONDecodeError as second_error:
-            repair_start = max(0, second_error.pos - 160)
-            repair_end = min(len(repaired), second_error.pos + 160)
-            repair_context = repaired[repair_start:repair_end].replace(
-                "\n", "\\n"
-            )
-            print("")
-            print(f"{purpose} JSON 自动修复后仍然无法解析。")
-            print(
-                f"修复后错误：第 {second_error.lineno} 行，"
-                f"第 {second_error.colno} 列；"
-                f"字符位置 {second_error.pos}。"
-            )
-            print(f"修复后错误附近内容：{repair_context}")
-            raise RuntimeError(
-                f"{purpose} JSON 格式错误，自动修复一次后仍失败。"
-            ) from second_error
+            parsed = json.loads(current_text)
+            print(f"{purpose} JSON 自动修复成功（第 {repair_attempt} 次）。")
+            return parsed
+        except json.JSONDecodeError as repair_error:
+            current_error = repair_error
 
-        print(f"{purpose} JSON 自动修复成功。")
-        return parsed
+    start = max(0, current_error.pos - 220)
+    end = min(len(current_text), current_error.pos + 220)
+    context = current_text[start:end].replace("\n", "\\n").replace("\r", "\\r")
+    print("")
+    print(f"{purpose} JSON 连续自动修复后仍然无法解析。")
+    print(
+        f"最终错误：第 {current_error.lineno} 行，第 {current_error.colno} 列；"
+        f"字符位置 {current_error.pos}。"
+    )
+    print(f"最终错误附近内容：{context}")
+    raise RuntimeError(
+        f"{purpose} JSON 格式错误，自动修复两次后仍失败；"
+        f"最终错误位于第 {current_error.lineno} 行、第 {current_error.colno} 列。"
+    ) from current_error
 
 
 # ============================================================
