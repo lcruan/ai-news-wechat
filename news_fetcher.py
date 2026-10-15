@@ -808,6 +808,72 @@ def extract_json_from_ai(text):
     return text
 
 
+def parse_json_with_repair(raw_text, purpose="AI 返回内容"):
+    """先解析 AI 返回的 JSON；语法错误时请求模型修复一次。"""
+
+    cleaned = extract_json_from_ai(raw_text)
+
+    try:
+        return json.loads(cleaned)
+    except json.JSONDecodeError as first_error:
+        start = max(0, first_error.pos - 160)
+        end = min(len(cleaned), first_error.pos + 160)
+        context = cleaned[start:end].replace("\n", "\\n")
+
+        print("")
+        print(f"{purpose} JSON 解析失败，准备让 AI 修复一次。")
+        print(
+            f"首次错误：第 {first_error.lineno} 行，"
+            f"第 {first_error.colno} 列；"
+            f"字符位置 {first_error.pos}。"
+        )
+        print(f"错误附近内容：{context}")
+
+        repair_prompt = f"""你是严格的 JSON 语法修复器。
+下面内容原本是一份 JSON，但存在语法错误。
+请只修复 JSON 语法，尽可能逐字保留所有字段、字段值、文章内容、段落顺序和代码内容；不要总结、改写、删减或补充文章事实。
+
+必须遵守：
+1. 只输出一个完整、合法的 JSON 对象。
+2. 不要使用 Markdown 代码围栏，不要添加解释。
+3. 字符串内部的双引号必须正确转义。
+4. 字符串中的换行、制表符等必须使用合法 JSON 转义。
+5. 保留原有字段结构和数组结构，不要遗漏字段。
+
+待修复内容如下：
+{cleaned}
+"""
+
+        repaired_raw = call_ai(
+            [{"role": "user", "content": repair_prompt}],
+            max_tokens=6000,
+        )
+        repaired = extract_json_from_ai(repaired_raw)
+
+        try:
+            parsed = json.loads(repaired)
+        except json.JSONDecodeError as second_error:
+            repair_start = max(0, second_error.pos - 160)
+            repair_end = min(len(repaired), second_error.pos + 160)
+            repair_context = repaired[repair_start:repair_end].replace(
+                "\n", "\\n"
+            )
+            print("")
+            print(f"{purpose} JSON 自动修复后仍然无法解析。")
+            print(
+                f"修复后错误：第 {second_error.lineno} 行，"
+                f"第 {second_error.colno} 列；"
+                f"字符位置 {second_error.pos}。"
+            )
+            print(f"修复后错误附近内容：{repair_context}")
+            raise RuntimeError(
+                f"{purpose} JSON 格式错误，自动修复一次后仍失败。"
+            ) from second_error
+
+        print(f"{purpose} JSON 自动修复成功。")
+        return parsed
+
+
 # ============================================================
 # 已处理文章记录
 #
@@ -1499,7 +1565,6 @@ web前端开发之旅
 3. 3～4 个正文小节
 4. 每个小节包含自然段
 5. 章节标题要简短，通常控制在 8～16 个汉字或约 20 个英文字符以内；优先使用清晰的短语，不要写成完整长句，不要堆叠解释性副标题，避免在手机端标题栏中出现两行以上的长标题。
-   章节标题应适合红色标签式标题栏，尽量控制在 8～14 个汉字；不要使用过长的解释性句子。
 5. 如果原文存在重要代码示例，应在相关小节中保留代码
 6. 如果原文存在真实案例、项目实践、API 使用场景、配置示例，
    应在相关小节中尽可能保留
@@ -1744,12 +1809,9 @@ web前端开发之旅
         max_tokens=6000,
     )
 
-    result = extract_json_from_ai(
-        result
-    )
-
-    article = json.loads(
-        result
+    article = parse_json_with_repair(
+        result,
+        purpose="公众号文章",
     )
 
     # 程序级硬校验：原文没有代码块时，AI 返回的代码一律丢弃。
