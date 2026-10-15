@@ -933,54 +933,24 @@ def render_lead(lead):
     return f"""
 <section style="
     margin:10px auto 24px auto;
-    padding:10px 15px;
-    background-color:#f2f9ff;
-    border:1px solid #5c8efe;
+    padding:14px 16px;
+    background-color:#fff8f7;
+    border-left:4px solid #e6dddd;
     box-sizing:border-box;
-    position:relative;
-    overflow:hidden;
 ">
-
-    <!-- 左上角黄色三角 -->
-    <section style="
-        position:absolute;
-        top:-1px;
-        left:-1px;
-        width:0;
-        height:0;
-        border-top:18px solid rgb(255,196,64);
-        border-right:18px solid transparent;
-        line-height:0;
-        font-size:0;
-    "></section>
-
     <p style="
         margin:0;
-        font-size:14px;
-        line-height:1.75em;
-        letter-spacing:1.5px;
+        font-size:15px;
+        line-height:1.8;
+        letter-spacing:0.5px;
         color:#333333;
         width:100%;
         box-sizing:border-box;
-        word-break:normal;
-        overflow-wrap:normal;
+        word-break:break-word;
+        overflow-wrap:break-word;
     ">
         {lead}
     </p>
-
-    <!-- 右下角蓝色三角 -->
-    <section style="
-        position:absolute;
-        right:-1px;
-        bottom:-1px;
-        width:0;
-        height:0;
-        border-bottom:18px solid #5c8efe;
-        border-left:18px solid transparent;
-        line-height:0;
-        font-size:0;
-    "></section>
-
 </section>
 """.strip()
 
@@ -1009,16 +979,13 @@ def render_section_heading(
 <table style="width:100%;border-collapse:collapse;table-layout:fixed;margin:24px 0 16px 0;">
   <tbody>
     <tr>
-      <td style="width:48px;padding:0;vertical-align:top;background:#5c8efe;text-align:center;color:#ffffff;font-size:14px;font-weight:bold;line-height:30px;">
-        {number_text}
-      </td>
-      <td style="padding:0;vertical-align:top;background:#ebf6ff;border-top:1px solid #5c8efe;border-bottom:1px solid #5c8efe;">
-        <p style="margin:0;padding:6px 10px;color:#5c8efe;font-size:16px;line-height:1.55;font-weight:bold;white-space:normal;word-break:break-all;overflow-wrap:break-word;">
+      <td style="padding:0 0 0 0;vertical-align:bottom;width:1%;white-space:nowrap;">
+        <section style="display:inline-block;background:#f36f61;color:#ffffff;padding:5px 10px;font-size:16px;line-height:1.5;font-weight:bold;white-space:normal;word-break:break-word;">
           {heading}
-        </p>
+        </section>
       </td>
-      <td style="width:18px;padding:0;vertical-align:top;background:#ebf6ff;border-top:1px solid #5c8efe;border-bottom:1px solid #5c8efe;">
-        <section style="width:0;height:0;border-top:18px solid rgb(255,196,64);border-left:18px solid transparent;line-height:0;font-size:0;"></section>
+      <td style="padding:0 0 2px 0;vertical-align:bottom;width:99%;">
+        <section style="height:2px;background:#f36f61;width:100%;font-size:0;line-height:0;"></section>
       </td>
     </tr>
   </tbody>
