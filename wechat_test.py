@@ -979,12 +979,12 @@ def render_section_heading(
 <table style="width:100%;border-collapse:collapse;table-layout:auto;margin:24px 0 16px 0;">
   <tbody>
     <tr>
-      <td style="padding:0;vertical-align:bottom;width:auto;white-space:normal;">
-        <section style="display:inline-block;max-width:100%;box-sizing:border-box;background:#f36f61;color:#ffffff;padding:5px 10px;font-size:16px;line-height:1.5;font-weight:bold;white-space:normal;word-break:normal;overflow-wrap:break-word;">
+      <td style="padding:0;vertical-align:bottom;width:1%;white-space:nowrap;">
+        <section style="display:inline-block;box-sizing:border-box;background:#f36f61;color:#ffffff;padding:5px 10px;font-size:16px;line-height:1.5;font-weight:bold;white-space:nowrap;word-break:keep-all;overflow-wrap:normal;">
           {heading}
         </section>
       </td>
-      <td style="padding:0 0 2px 0;vertical-align:bottom;width:100%;">
+      <td style="padding:0 0 2px 0;vertical-align:bottom;width:99%;">
         <section style="height:2px;background:#f36f61;width:100%;font-size:0;line-height:0;"></section>
       </td>
     </tr>
