@@ -999,30 +999,21 @@ def render_section_heading(
     number,
     heading
 ):
-    """生成更适合微信手机端的章节标题：表格布局、自然换行、避免 flex 兼容差异。"""
+    """生成珊瑚红标题标签与贯穿右侧的红色底线，适配微信公众号手机端。"""
 
     heading = clean_section_heading(heading, number)
     heading = escape_text(heading)
     number_text = f"{number:02d}"
 
+    # 保留现有章节编号，但融入红色标题标签；参考样式本身不带编号。
+    label_text = f"{number_text}　{heading}"
+
     return f"""
-<table style="width:100%;border-collapse:collapse;table-layout:fixed;margin:24px 0 16px 0;">
-  <tbody>
-    <tr>
-      <td style="width:48px;padding:0;vertical-align:top;background:#5c8efe;text-align:center;color:#ffffff;font-size:14px;font-weight:bold;line-height:30px;">
-        {number_text}
-      </td>
-      <td style="padding:0;vertical-align:top;background:#ebf6ff;border-top:1px solid #5c8efe;border-bottom:1px solid #5c8efe;">
-        <p style="margin:0;padding:6px 10px;color:#5c8efe;font-size:16px;line-height:1.55;font-weight:bold;white-space:normal;word-break:break-all;overflow-wrap:break-word;">
-          {heading}
-        </p>
-      </td>
-      <td style="width:18px;padding:0;vertical-align:top;background:#ebf6ff;border:0;border-bottom:2px solid #5c8efe;">
-        <section style="width:0;height:0;border-top:18px solid rgb(255,196,64);border-left:18px solid transparent;line-height:0;font-size:0;"></section>
-      </td>
-    </tr>
-  </tbody>
-</table>
+<h2 style="margin:30px 0 15px 0;padding:0;border:0;border-bottom:2px solid #ef7060;font-size:1.3em;font-weight:bold;line-height:1.5;color:#000000;background:#ffffff;word-break:break-word;overflow-wrap:break-word;">
+  <span style="display:inline-block;margin:0 3px 0 0;padding:3px 10px 1px;background:#ef7060;color:#ffffff;font-size:1em;font-weight:bold;line-height:1.5;border-top-left-radius:3px;border-top-right-radius:3px;white-space:normal;word-break:break-word;overflow-wrap:break-word;">
+    {label_text}
+  </span>
+</h2>
 """.strip()
 
 
