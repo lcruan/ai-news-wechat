@@ -905,10 +905,8 @@ def render_code_block(code_block, access_token):
 # 顶部导语框
 #
 # 固定模板：
-# 左上角黄色三角
-# 右下角蓝色三角
-# 蓝色边框
-# 浅蓝背景
+# 珊瑚红边框与右下角珊瑚红三角
+# 浅粉色背景
 # ============================================================
 
 def render_lead(lead):
@@ -934,8 +932,8 @@ def render_lead(lead):
 <section style="
     margin:10px auto 24px auto;
     padding:10px 15px;
-    background-color:#f2f9ff;
-    border:1px solid #5c8efe;
+    background-color:#fff9f9;
+    border:1px solid #ef7060;
     box-sizing:border-box;
     position:relative;
     overflow:hidden;
@@ -968,14 +966,14 @@ def render_lead(lead):
         {lead}
     </p>
 
-    <!-- 右下角蓝色三角 -->
+    <!-- 右下角珊瑚红三角 -->
     <section style="
         position:absolute;
         right:-1px;
         bottom:-1px;
         width:0;
         height:0;
-        border-bottom:18px solid #5c8efe;
+        border-bottom:18px solid #ef7060;
         border-left:18px solid transparent;
         line-height:0;
         font-size:0;
@@ -1003,13 +1001,11 @@ def render_section_heading(
 
     heading = clean_section_heading(heading, number)
     heading = escape_text(heading)
-    number_text = f"{number:02d}"
-
-    # 保留现有章节编号，但融入红色标题标签；参考样式本身不带编号。
-    label_text = f"{number_text}　{heading}"
+    # 参考样式不显示章节序号，标题文字从左侧开始。 
+    label_text = heading
 
     return f"""
-<h2 style="margin:30px 0 15px 0;padding:0;border:0;border-bottom:2px solid #ef7060;font-size:1.3em;font-weight:bold;line-height:1.5;color:#000000;background:#ffffff;word-break:break-word;overflow-wrap:break-word;">
+<h2 style="margin:30px 0 15px 0;padding:0;border:0;border-bottom:2px solid #ef7060;text-align:left;font-size:1.3em;font-weight:bold;line-height:1.5;color:#000000;background:#ffffff;word-break:break-word;overflow-wrap:break-word;">
   <span style="display:inline-block;margin:0 3px 0 0;padding:3px 10px 1px;background:#ef7060;color:#ffffff;font-size:1em;font-weight:bold;line-height:1.5;border-top-left-radius:3px;border-top-right-radius:3px;white-space:normal;word-break:break-word;overflow-wrap:break-word;">
     {label_text}
   </span>
