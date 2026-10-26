@@ -8,7 +8,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
   group: ai-news-daily
@@ -22,9 +22,64 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0
+          # 只需要当前版本代码，不需要下载完整 Git 历史
+          fetch-depth: 1
+
+      - name: Prepare persistent processed-news history
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          # 历史文件保存在工作区之外，避免每次 checkout 覆盖。
+          PERSISTENT_DATA_DIR="/home/github-runner/data/ai-news-wechat"
+          PERSISTENT_HISTORY_FILE="$PERSISTENT_DATA_DIR/processed_news.json"
+          WORKSPACE_HISTORY_FILE="$GITHUB_WORKSPACE/processed_news.json"
+
+          mkdir -p "$PERSISTENT_DATA_DIR"
+
+          # 仅在持久化文件首次不存在时迁移仓库中的旧历史。
+          # 后续运行绝不使用仓库文件覆盖本地最新历史。
+          if [ ! -f "$PERSISTENT_HISTORY_FILE" ]; then
+            if [ -f "$WORKSPACE_HISTORY_FILE" ] && [ ! -L "$WORKSPACE_HISTORY_FILE" ]; then
+              cp "$WORKSPACE_HISTORY_FILE" "$PERSISTENT_HISTORY_FILE"
+              echo "已将仓库中的旧 processed_news.json 迁移到 ECS 持久化目录。"
+            else
+              printf '{"links": []}\n' > "$PERSISTENT_HISTORY_FILE"
+              echo "未找到旧历史文件，已初始化空历史。"
+            fi
+          else
+            echo "发现 ECS 上已有持久化历史，保留现有记录。"
+          fi
+
+          # 让现有 Python 脚本继续使用原来的相对路径，无需修改
+          # news_fetcher.py / wechat_test.py 的历史读写逻辑。
+          rm -f "$WORKSPACE_HISTORY_FILE"
+          ln -s "$PERSISTENT_HISTORY_FILE" "$WORKSPACE_HISTORY_FILE"
+
+          echo "历史文件链接："
+          ls -l "$WORKSPACE_HISTORY_FILE"
+          echo "持久化历史文件：$PERSISTENT_HISTORY_FILE"
+
+          python3 - <<'PY'
+          import json
+          import os
+
+          path = os.path.join(os.environ["GITHUB_WORKSPACE"], "processed_news.json")
+          with open(path, "r", encoding="utf-8") as f:
+              data = json.load(f)
+
+          if isinstance(data, dict):
+              links = data.get("links", [])
+          elif isinstance(data, list):
+              links = data
+          else:
+              raise RuntimeError("processed_news.json 格式不是对象或数组")
+
+          print(f"当前持久化已处理链接数量：{len(links)}")
+          PY
 
       - name: Prepare Python dependencies
+        shell: bash
         run: |
           python3 - <<'PY'
           import importlib.util
@@ -70,134 +125,3 @@ jobs:
           WECHAT_APP_SECRET: ${{ secrets.WECHAT_APP_SECRET }}
         run: |
           python3 wechat_test.py
-
-      - name: Save processed news history
-        run: |
-          # ============================================================
-          # self-hosted Runner 上不要依赖当前 shell 的 Git 工作目录
-          # 统一使用 git -C "$GITHUB_WORKSPACE"
-          # ============================================================
-
-          echo "GITHUB_WORKSPACE："
-          echo "$GITHUB_WORKSPACE"
-
-          echo "当前工作目录："
-          pwd
-
-          echo "当前仓库目录内容："
-          ls -la "$GITHUB_WORKSPACE"
-
-          # ============================================================
-          # 检查 processed_news.json
-          # ============================================================
-          if [ ! -f "$GITHUB_WORKSPACE/processed_news.json" ]; then
-            echo "没有找到 processed_news.json，跳过提交。"
-            exit 0
-          fi
-
-          # ============================================================
-          # 检查 .git
-          # ============================================================
-          if [ ! -d "$GITHUB_WORKSPACE/.git" ]; then
-            echo "错误：$GITHUB_WORKSPACE 下没有找到 .git 目录。"
-            echo "GitHub Actions checkout 可能没有正确完成。"
-            exit 1
-          fi
-
-          echo "Git 仓库检查通过。"
-
-          # ============================================================
-          # 清除可能影响 Git 判断仓库位置的环境变量
-          # ============================================================
-          unset GIT_DIR
-          unset GIT_WORK_TREE
-
-          # ============================================================
-          # self-hosted Runner 可能没有自动设置 HOME
-          # Git --global 配置需要 HOME
-          # ============================================================
-          export HOME="/home/github-runner"
-
-          echo "当前 HOME："
-          echo "$HOME"
-
-          # ============================================================
-          # 将当前 GitHub Actions 工作目录加入 Git 安全目录
-          # 解决 self-hosted Runner 的 dubious ownership 问题
-          # ============================================================
-          echo "配置 Git safe.directory："
-
-          git config --global --add safe.directory "$GITHUB_WORKSPACE"
-
-          # ============================================================
-          # 确认 Git 能够识别仓库
-          # ============================================================
-          echo "Git 仓库根目录："
-
-          git -C "$GITHUB_WORKSPACE" rev-parse --show-toplevel
-
-          # ============================================================
-          # 配置 Git 用户
-          # ============================================================
-          echo "配置 Git 用户："
-
-          git -C "$GITHUB_WORKSPACE" config user.name "github-actions[bot]"
-
-          git -C "$GITHUB_WORKSPACE" config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-
-          # ============================================================
-          # 查看当前分支
-          # ============================================================
-          echo "当前 Git 分支："
-
-          git -C "$GITHUB_WORKSPACE" branch --show-current
-
-          # ============================================================
-          # 同步远程仓库
-          # ============================================================
-          echo "同步远程仓库："
-
-          git -C "$GITHUB_WORKSPACE" fetch origin
-
-          # ============================================================
-          # 查看 Git 状态
-          # ============================================================
-          echo "当前 Git 状态："
-
-          git -C "$GITHUB_WORKSPACE" status --short --branch
-
-          # ============================================================
-          # 强制添加 processed_news.json
-          # 防止 .gitignore 意外忽略
-          # ============================================================
-          echo "添加 processed_news.json："
-
-          git -C "$GITHUB_WORKSPACE" add -f processed_news.json
-
-          # ============================================================
-          # 判断是否真的有变化
-          # ============================================================
-          if git -C "$GITHUB_WORKSPACE" diff --cached --quiet -- processed_news.json; then
-            echo "processed_news.json 没有新的变化。"
-            exit 0
-          fi
-
-          # ============================================================
-          # 提交
-          # ============================================================
-          echo "准备提交已处理文章记录："
-
-          cat "$GITHUB_WORKSPACE/processed_news.json"
-
-          git -C "$GITHUB_WORKSPACE" commit \
-            -m "chore: update processed news history"
-
-          # ============================================================
-          # 推送
-          # ============================================================
-          echo "准备推送当前分支：${GITHUB_REF_NAME}"
-
-          git -C "$GITHUB_WORKSPACE" push \
-            origin "HEAD:${GITHUB_REF_NAME}"
-
-          echo "processed_news.json 已成功提交并推送。"
